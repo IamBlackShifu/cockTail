@@ -9,11 +9,11 @@ The repository currently contains two front-end surfaces:
 - `/` customer storefront with catalogue search, mood filters, customization, build-your-own cocktails, bag, checkout, account panel, and order tracking.
 - `/ops` operations dashboard with kitchen queue, revenue reporting, preparation metrics, and driver readiness.
 
-The data is intentionally local demo state for this milestone. The UI boundaries are ready to connect to authenticated API modules, PostgreSQL, payments, and real-time updates.
+Checkout creates real, persistent orders. The staff dashboard requires a password, receives orders, and manages the live product catalogue and prices. Product changes reach open storefronts within 30 seconds or when the window regains focus. Customers receive order status updates every ten seconds and retain their latest tracking receipt across refreshes. Payments are collected on delivery or pickup and recorded by staff. Online payment processing is not integrated.
 
 ## Run locally
 
-Requirements: Node.js 20+ and npm.
+Requirements: Node.js 24 LTS and npm. This application uses the built-in SQLite module.
 
 ```bash
 npm install
@@ -27,12 +27,13 @@ Open `http://localhost:3000` for the customer app or `http://localhost:3000/ops`
 ```bash
 npm run lint
 npm run build
+npm run test:orders
 npm run start
 ```
 
 ## Architecture direction
 
-The app uses the Next.js App Router. Customer and operations experiences are separate routes so staff workflows can later receive independent authentication and permissions.
+The app uses the Next.js App Router. Route handlers validate order details, price items from the shared catalogue, protect staff APIs with revocable HttpOnly sessions, and use SQLite transactions for order writes. Orders and sessions survive restarts through a persistent Docker volume.
 
 Planned domain modules:
 
@@ -43,20 +44,17 @@ Planned domain modules:
 - `operations`: preparation queue, driver assignment, inventory, and reporting.
 - `notifications`: email, SMS, WhatsApp, and push adapters.
 
-Recommended next backend slice:
-
-1. Add Prisma with PostgreSQL and seed the catalogue entities.
-2. Replace local cart state with server actions or route handlers.
-3. Add secure session authentication and role checks for `/ops`.
-4. Add WebSocket events for order status and driver assignment.
+Next upgrades: individual staff accounts and roles, integrated payments, product option management, delivery assignment, customer order history, and automated off-server backups.
 
 ## Environment
 
-Copy `.env.example` to `.env.local` when backend services are introduced. Secrets must remain server-only and must never be exposed in client components.
+See `.env.example` for local settings. Checkout remains disabled until a staff password hash is configured. For production, the deployment helper securely prompts for a password and writes `/opt/tipsygo/shared/runtime.env`. Secrets stay server-only. API tests generate isolated credentials and a temporary database; they never connect to the production VPS.
 
 ## Deployment
 
-The app can be deployed to Vercel or run in the included Docker image. Configure environment variables in the deployment platform, run the production build, and place managed PostgreSQL, Redis, object storage, and payment services behind the domain adapters described above.
+For the Ubuntu 24.04 Namecheap VPS at `162.0.238.193` and `tipsygo.pro`, follow [the deployment command list](deploy/README.md). It includes a Windows upload helper and bundled shell scripts for server setup, app deployment, and HTTPS.
+
+Run the included Docker image on the VPS with its persistent `tipsygo_orders` volume. The current SQLite storage needs durable disk; an ephemeral serverless deployment requires a different database integration. See the deployment guide for backup commands.
 
 ## Learn More
 
@@ -67,11 +65,14 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-## Deploy on Vercel
+## Browser checks
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+After `npm run build`, `npm run test:orders` verifies prices, validation, customer tracking, staff access, status transitions and persistence. To also exercise mobile checkout and a separate staff browser in Windows PowerShell:
 
-Check out [the Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```powershell
+$env:RUN_BROWSER_TESTS = "1"
+$env:BROWSER_CHANNEL = "msedge"
+npm run test:orders
+```
 
-```bash
-
+This uses installed Microsoft Edge. Alternatively, install Playwright Chromium with `npx playwright install chromium` and leave `BROWSER_CHANNEL` unset. Screenshots are saved in `.test-artifacts/`.

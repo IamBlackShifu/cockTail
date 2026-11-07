@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.env*
+*.tar.gz
+*.log
+deploy
+.codex
+.agents
+.data
+tests
+.test-artifacts
+*.sqlite*

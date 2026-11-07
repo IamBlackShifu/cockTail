@@ -1,74 +1,209 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import Image from "next/image";
+import { useEffect, useMemo, useState } from "react";
 
-type Cocktail = { id: number; name: string; note: string; price: number; category: string; image: string; strength: string; tone: string };
-type CustomOption = { label: string; price: number };
-type CartItem = Cocktail & { customization?: string };
-const cocktails: Cocktail[] = [
-  { id: 1, name: "Mango Heatwave", note: "Mango · chilli · lime", price: 13, category: "Fruity", image: "https://images.unsplash.com/photo-1551538827-9c037cb4f32a?auto=format&fit=crop&w=900&q=85", strength: "Medium", tone: "sunset" },
-  { id: 2, name: "Velvet Negroni", note: "Gin · vermouth · orange", price: 15, category: "Strong", image: "https://images.unsplash.com/photo-1551024709-8f23befc6f87?auto=format&fit=crop&w=900&q=85", strength: "Strong", tone: "ruby" },
-  { id: 3, name: "Cucumber Gimlet", note: "Gin · cucumber · basil", price: 12, category: "Low Alcohol", image: "https://images.unsplash.com/photo-1629203849820-fdd70d49c38e?auto=format&fit=crop&w=900&q=85", strength: "Light", tone: "mint" },
-  { id: 4, name: "Pink Paloma", note: "Tequila · grapefruit · sea salt", price: 14, category: "Sour", image: "https://images.unsplash.com/photo-1513558161293-cdaf765ed2fd?auto=format&fit=crop&w=900&q=85", strength: "Medium", tone: "pink" },
-  { id: 5, name: "Midnight Mule", note: "Vodka · ginger · blackberry", price: 13, category: "Signature", image: "https://images.unsplash.com/photo-1572116469696-31de0f17cc34?auto=format&fit=crop&w=900&q=85", strength: "Medium", tone: "violet" },
-  { id: 6, name: "Garden Spritz", note: "Elderflower · prosecco · mint", price: 11, category: "Classic", image: "https://images.unsplash.com/photo-1556679343-c7306c1976bc?auto=format&fit=crop&w=900&q=85", strength: "Light", tone: "lime" },
-];
-const categories = ["All sips", "Signature", "Classic", "Fruity", "Sour", "Strong", "Low Alcohol", "Mocktails"];
-const options = { spirit: [{ label: "Vodka", price: 0 }, { label: "Gin", price: 1 }, { label: "Tequila", price: 1 }, { label: "Rum", price: 0 }], mixer: [{ label: "Passionfruit", price: 1 }, { label: "Tonic water", price: 0 }, { label: "Ginger beer", price: 1 }, { label: "Soda", price: 0 }], finish: [{ label: "Lime & mint", price: 0 }, { label: "Chilli salt", price: 1 }, { label: "Berry crown", price: 2 }] };
-const customizationGroups: { key: keyof Customization; label: string; options: CustomOption[] }[] = [
-  { key: "size", label: "Choose your size", options: [{ label: "Classic", price: 0 }, { label: "Large cup", price: 3 }] },
-  { key: "sweetness", label: "Sweetness", options: [{ label: "No sugar", price: 0 }, { label: "Low", price: 0 }, { label: "Normal", price: 0 }, { label: "Extra sweet", price: 0 }] },
-  { key: "strength", label: "Alcohol strength", options: [{ label: "Light", price: 0 }, { label: "Standard", price: 0 }, { label: "Extra shot", price: 3 }] },
-  { key: "ice", label: "Ice", options: [{ label: "No ice", price: 0 }, { label: "Normal ice", price: 0 }, { label: "Extra ice", price: 0 }, { label: "Crushed ice", price: 1 }] },
-  { key: "garnish", label: "Garnish", options: [{ label: "No garnish", price: 0 }, { label: "Lime & mint", price: 0 }, { label: "Berries", price: 2 }, { label: "Cocktail cherry", price: 1 }] },
-  { key: "extra", label: "Add something extra", options: [{ label: "Nothing extra", price: 0 }, { label: "Energy drink", price: 2 }, { label: "Premium spirit", price: 4 }, { label: "Snack pairing", price: 5 }] },
-];
-type Customization = { size: CustomOption; sweetness: CustomOption; strength: CustomOption; ice: CustomOption; garnish: CustomOption; extra: CustomOption };
-const defaultCustomization: Customization = { size: customizationGroups[0].options[0], sweetness: customizationGroups[1].options[2], strength: customizationGroups[2].options[1], ice: customizationGroups[3].options[1], garnish: customizationGroups[4].options[1], extra: customizationGroups[5].options[0] };
+import { options, customizationGroups, defaultCustomization, type Cocktail, type Customization } from "@/lib/catalog";
+import type { OrderItemInput, SavedCreation } from "@/lib/orders";
+import { Checkout } from "@/components/checkout";
+import { OrderTracker } from "@/components/order-tracker";
+type CartItem = Cocktail & { customization?: string; selection: OrderItemInput };
+const CART_STORAGE_KEY = "tipsygo-cart-v1";
+const CREATOR_STORAGE_KEY = "tipsygo-creator-key-v1";
+const REMIX_STORAGE_KEY = "tipsygo-remix-v1";
+
+function creatorKey() {
+  const existing = window.localStorage.getItem(CREATOR_STORAGE_KEY);
+  if (existing && /^[a-f0-9]{64}$/.test(existing)) return existing;
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const created = Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+  window.localStorage.setItem(CREATOR_STORAGE_KEY, created);
+  return created;
+}
+
+function savedCart(value: unknown): CartItem[] {
+  if (!Array.isArray(value)) return [];
+  const items = value.filter((item): item is CartItem => {
+    if (!item || typeof item !== "object") return false;
+    const candidate = item as Partial<CartItem>;
+    return Number.isInteger(candidate.id) && typeof candidate.name === "string" && candidate.name.length <= 120 && typeof candidate.note === "string" && typeof candidate.category === "string" && typeof candidate.image === "string" && typeof candidate.strength === "string" && typeof candidate.tone === "string" && typeof candidate.price === "number" && Number.isFinite(candidate.price) && candidate.price >= 0 && candidate.price <= 1000 && !!candidate.selection && Number.isInteger(candidate.selection.quantity) && candidate.selection.quantity >= 1 && candidate.selection.quantity <= 20 && typeof candidate.selection.choices === "object";
+  }).slice(0, 40);
+  let remaining = 40;
+  return items.flatMap(item => {
+    if (remaining < 1) return [];
+    const quantity = Math.min(item.selection.quantity, remaining);
+    remaining -= quantity;
+    return [{ ...item, selection: { ...item.selection, quantity } }];
+  });
+}
 
 export default function Home() {
+  const [cocktails, setCocktails] = useState<Cocktail[]>([]);
+  const [menuCategories, setMenuCategories] = useState<string[]>([]);
+  const [menuLoading, setMenuLoading] = useState(true);
+  const [menuError, setMenuError] = useState("");
   const [category, setCategory] = useState("All sips");
   const [query, setQuery] = useState("");
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [cartReady, setCartReady] = useState(false);
   const [customizing, setCustomizing] = useState<Cocktail | null>(null);
   const [customization, setCustomization] = useState<Customization>(defaultCustomization);
+  const [editingCartIndex, setEditingCartIndex] = useState<number | null>(null);
   const [showBuilder, setShowBuilder] = useState(false);
   const [builderStep, setBuilderStep] = useState(0);
   const [builder, setBuilder] = useState({ spirit: options.spirit[0], mixer: options.mixer[0], finish: options.finish[0] });
+  const [creationName, setCreationName] = useState("");
+  const [showCreations, setShowCreations] = useState(false);
+  const [creations, setCreations] = useState<SavedCreation[]>([]);
+  const [community, setCommunity] = useState<SavedCreation[]>([]);
+  const [creationsLoading, setCreationsLoading] = useState(false);
+  const [creationsError, setCreationsError] = useState("");
+  const [shareMessage, setShareMessage] = useState("");
   const [showCheckout, setShowCheckout] = useState(false);
-  const [deliveryMode, setDeliveryMode] = useState<"Delivery" | "Pickup">("Delivery");
-  const [paymentMethod, setPaymentMethod] = useState("Card");
-  const [address, setAddress] = useState("");
-  const [instructions, setInstructions] = useState("");
-  const [promo, setPromo] = useState("");
-  const [promoApplied, setPromoApplied] = useState(false);
-  const [orderPlaced, setOrderPlaced] = useState(false);
+  const [bagMessage, setBagMessage] = useState("");
+  useEffect(() => {
+    const restore = window.setTimeout(() => {
+      try {
+        const stored = window.localStorage.getItem(CART_STORAGE_KEY);
+        if (stored) setCart(savedCart(JSON.parse(stored)));
+      } catch {
+        window.localStorage.removeItem(CART_STORAGE_KEY);
+      } finally {
+        setCartReady(true);
+      }
+    }, 0);
+    return () => window.clearTimeout(restore);
+  }, []);
+  useEffect(() => {
+    const loadCommunity = window.setTimeout(() => { void fetch("/api/community", { cache: "no-store", headers: { "X-Creator-Key": creatorKey() } }).then(response => response.json()).then(result => setCommunity(result.creations || [])).catch(() => undefined); }, 0);
+    return () => window.clearTimeout(loadCommunity);
+  }, []);
+  useEffect(() => {
+    if (!cartReady) return;
+    if (cart.length) window.localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cart));
+    else window.localStorage.removeItem(CART_STORAGE_KEY);
+  }, [cart, cartReady]);
+  useEffect(() => {
+    const restoreRemix = window.setTimeout(() => {
+      try {
+        const raw = window.sessionStorage.getItem(REMIX_STORAGE_KEY);
+        if (!raw) return;
+        const remix = JSON.parse(raw) as { name?: unknown; choices?: Record<string, unknown> };
+        if (typeof remix.name !== "string" || !remix.choices) return;
+        const spirit = options.spirit.find(item => item.label === remix.choices?.spirit);
+        const mixer = options.mixer.find(item => item.label === remix.choices?.mixer);
+        const finish = options.finish.find(item => item.label === remix.choices?.finish);
+        if (!spirit || !mixer || !finish) return;
+        setBuilder({ spirit, mixer, finish }); setCreationName(`${remix.name} Remix`.slice(0, 60)); setBuilderStep(0); setShowBuilder(true);
+      } catch {} finally { window.sessionStorage.removeItem(REMIX_STORAGE_KEY); }
+    }, 0);
+    return () => window.clearTimeout(restoreRemix);
+  }, []);
+  useEffect(() => {
+    const confirmed = () => { window.localStorage.removeItem(CART_STORAGE_KEY); setCart([]); setShowCheckout(false); };
+    window.addEventListener("tipsygo-order", confirmed);
+    const controller = new AbortController();
+    const loadMenu = () => fetch("/api/products", { cache: "no-store", signal: controller.signal })
+        .then(async response => {
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || "The menu is unavailable.");
+          setCocktails(result.products); setMenuCategories(result.categories || []); setMenuError("");
+        })
+        .catch(error => { if (error.name !== "AbortError") setMenuError("We couldn’t load the current menu. Please refresh and try again."); })
+        .finally(() => setMenuLoading(false));
+    void loadMenu();
+    const refreshMenu = () => { if (!document.hidden) void loadMenu(); };
+    const interval = setInterval(refreshMenu, 30000);
+    window.addEventListener("focus", refreshMenu);
+    return () => { controller.abort(); clearInterval(interval); window.removeEventListener("focus", refreshMenu); window.removeEventListener("tipsygo-order", confirmed); };
+  }, []);
   const [showAccount, setShowAccount] = useState(false);
-  const [orderNumber] = useState("TG-1048");
-  const filteredCocktails = useMemo(() => cocktails.filter((drink) => (category === "All sips" || drink.category === category) && `${drink.name} ${drink.note}`.toLowerCase().includes(query.toLowerCase())), [category, query]);
+  const categories = useMemo(() => ["All sips", ...menuCategories.filter(item => cocktails.some(drink => drink.category === item))], [cocktails, menuCategories]);
+  const filteredCocktails = useMemo(() => cocktails.filter((drink) => (category === "All sips" || drink.category === category) && `${drink.name} ${drink.note}`.toLowerCase().includes(query.toLowerCase())), [cocktails, category, query]);
   const builderPrice = 14 + builder.spirit.price + builder.mixer.price + builder.finish.price;
   const customizationPrice = customizing ? customizing.price + Object.values(customization).reduce((sum, option) => sum + option.price, 0) : 0;
-  const subtotal = cart.reduce((sum, item) => sum + item.price, 0);
-  const deliveryFee = deliveryMode === "Delivery" ? (subtotal >= 40 ? 0 : 4) : 0;
-  const serviceFee = subtotal * 0.05;
-  const discount = promoApplied ? subtotal * 0.1 : 0;
-  const orderTotal = subtotal + deliveryFee + serviceFee - discount;
-  const openCustomization = (drink: Cocktail) => { setCustomization(defaultCustomization); setCustomizing(drink); };
-  const addCustomizedDrink = () => { if (!customizing) return; const summary = Object.values(customization).map((option) => option.label).filter((label) => !["Classic", "Normal", "Standard", "Normal ice", "Nothing extra"].includes(label)).join(" · "); setCart((current) => [...current, { ...customizing, price: customizationPrice, note: summary || customizing.note, customization: summary || "Classic build" }]); setCustomizing(null); };
-  const placeOrder = () => { setShowCheckout(false); setOrderPlaced(true); setTimeout(() => document.getElementById("order-status")?.scrollIntoView({ behavior: "smooth" }), 50); };
+  const bagCount = cart.reduce((sum, item) => sum + item.selection.quantity, 0);
+  const subtotal = cart.reduce((sum, item) => sum + item.price * item.selection.quantity, 0);
+  const openCustomization = (drink: Cocktail, cartIndex: number | null = null) => {
+    setEditingCartIndex(cartIndex);
+    const savedChoices = cartIndex === null ? {} : (drink as CartItem).selection.choices;
+    setCustomization(cartIndex === null ? defaultCustomization : Object.fromEntries(customizationGroups.map(group => [group.key, group.options.find(option => option.label === savedChoices[group.key]) || defaultCustomization[group.key]])) as Customization);
+    setCustomizing(drink);
+  };
+  const announceAdded = (name: string) => { setBagMessage(`${name} added to your bag.`); window.setTimeout(() => setBagMessage(""), 3000); };
+  const addCustomizedDrink = () => { if (!customizing || (editingCartIndex === null && bagCount >= 40)) return; const summary = Object.values(customization).map((option) => option.label).filter((label) => !["Classic", "Normal", "Standard", "Normal ice", "Nothing extra"].includes(label)).join(" · "); const name = customizing.name; const updated = { ...customizing, price: customizationPrice, note: summary || customizing.note, customization: summary || "Classic build", selection: { cocktailId: customizing.id, quantity: editingCartIndex === null ? 1 : cart[editingCartIndex]?.selection.quantity || 1, choices: Object.fromEntries(Object.entries(customization).map(([key, option]) => [key, option.label])) } }; setCart((current) => editingCartIndex === null ? [...current, updated] : current.map((item, index) => index === editingCartIndex ? updated : item)); setCustomizing(null); setEditingCartIndex(null); announceAdded(editingCartIndex === null ? name : `${name} updated`); };
+  const changeQuantity = (index: number, change: number) => setCart(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, selection: { ...item.selection, quantity: Math.max(1, Math.min(20, item.selection.quantity + change)) } } : item));
+  const openCreations = async () => {
+    setShowCreations(true); setCreationsLoading(true); setCreationsError("");
+    try {
+      const response = await fetch("/api/creations", { cache: "no-store", headers: { "X-Creator-Key": creatorKey() } });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Your creations could not be loaded.");
+      setCreations(result.creations);
+    } catch (error) { setCreationsError(error instanceof Error ? error.message : "Your creations could not be loaded."); }
+    finally { setCreationsLoading(false); }
+  };
+  const reorderCreation = (creation: SavedCreation) => {
+    if (bagCount >= 40) return;
+    const labels = Object.values(creation.choices);
+    setCart(current => [...current, { id: -1, name: creation.name, note: labels.join(" · "), price: creation.unitCents / 100, category: "Your creations", image: cocktails[0]?.image || "", strength: "Your way", tone: "sunset", customization: labels.join(" · "), selection: { cocktailId: -1, quantity: 1, choices: creation.choices, creationName: creation.name, creatorKey: creatorKey(), creationId: creation.id } }]);
+    setShowCreations(false); announceAdded(creation.name);
+  };
+  const sharedUrl = async (creation: SavedCreation) => {
+    if (creation.shareSlug) return `${window.location.origin}/mix/${creation.shareSlug}`;
+    const response = await fetch(`/api/creations/${creation.id}/share`, { method: "POST", headers: { "X-Creator-Key": creatorKey() } });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "This mix could not be shared.");
+    setCreations(current => current.map(item => item.id === creation.id ? result.creation : item));
+    return `${window.location.origin}/mix/${result.creation.shareSlug}`;
+  };
+  const shareCreation = async (creation: SavedCreation, channel: "copy" | "whatsapp") => {
+    setShareMessage("");
+    try {
+      const url = await sharedUrl(creation);
+      if (channel === "whatsapp") window.open(`https://wa.me/?text=${encodeURIComponent(`Check out ${creation.name}, my cocktail on TipsyGo: ${url}`)}`, "_blank", "noopener,noreferrer");
+      else { await navigator.clipboard.writeText(url); setShareMessage(`Link copied for ${creation.name}.`); }
+    } catch (error) { setCreationsError(error instanceof Error ? error.message : "This mix could not be shared."); }
+  };
+  const submitCommunity = async (creation: SavedCreation) => {
+    setShareMessage(""); setCreationsError("");
+    try { const response = await fetch(`/api/creations/${creation.id}/submit`, { method: "POST", headers: { "X-Creator-Key": creatorKey() } }); const result = await response.json(); if (!response.ok) throw new Error(result.error); setCreations(current => current.map(item => item.id === creation.id ? result.creation : item)); setShareMessage(`${creation.name} was sent to the TipsyGo team for review.`); }
+    catch (error) { setCreationsError(error instanceof Error ? error.message : "This mix could not be submitted."); }
+  };
+  const addCommunityCreation = (creation: SavedCreation) => {
+    if (bagCount >= 40) return;
+    const recipe = Object.values(creation.choices).join(" · ");
+    setCart(current => [...current, { id: -1, name: creation.name, note: recipe, price: creation.unitCents / 100, category: "Community creations", image: "/tipsygo-logo-v2.png", strength: "Community", tone: "sunset", customization: recipe, selection: { cocktailId: -1, quantity: 1, choices: creation.choices, creationName: creation.name, creatorKey: creatorKey(), sourceCreationId: creation.id } }]);
+    announceAdded(creation.name);
+  };
+  const toggleCommunityLike = async (creation: SavedCreation) => {
+    try { const response = await fetch(`/api/community/${creation.id}/like`, { method: "POST", headers: { "X-Creator-Key": creatorKey() } }); const result = await response.json(); if (!response.ok) throw new Error(result.error); setCommunity(current => current.map(item => item.id === creation.id ? { ...item, ...result } : item).sort((a, b) => Number(b.featured) - Number(a.featured) || b.likeCount - a.likeCount || b.orderCount - a.orderCount)); }
+    catch { setBagMessage("We couldn't save that like. Please try again."); }
+  };
+  const addBuilderCreation = () => {
+    const name = creationName.trim();
+    if (name.length < 2 || name.length > 60 || bagCount >= 40) return;
+    const choices = Object.fromEntries(Object.entries(builder).map(([key, option]) => [key, option.label]));
+    const recipe = Object.values(builder).map(option => option.label).join(" · ");
+    setCart(current => [...current, { id: -1, name, note: recipe, price: builderPrice, category: "Your creations", image: cocktails[0]?.image || "", strength: "Your way", tone: "sunset", customization: recipe, selection: { cocktailId: -1, quantity: 1, choices, creationName: name, creatorKey: creatorKey() } }]);
+    setShowBuilder(false); setCreationName(""); announceAdded(name);
+  };
   return (
     <main className="site-shell">
-        <header className="topbar"><a className="brand" href="#top" aria-label="Tipsygo home"><span className="brand-mark">✦</span> TIPSYGO</a><nav className="desktop-nav" aria-label="Main navigation"><a href="#menu">Explore</a><a href="#how-it-works">How it works</a><a href="#reorder">Reorder</a></nav><div className="header-actions"><button className="icon-button" aria-label="Search" onClick={() => document.getElementById("search")?.focus()}>⌕</button><button className="cart-button" onClick={() => document.getElementById("cart")?.scrollIntoView({ behavior: "smooth" })}>Bag <span>{cart.length}</span></button><button className="avatar" aria-label="Open account" onClick={() => setShowAccount(true)}>S</button></div></header>
-        <section className="hero" id="top"><div className="hero-copy"><p className="eyebrow">Cocktails on demand <span>•</span> Delivered in 30 min</p><h1>Your night.<br /><em>Your mix.</em><br />Delivered.</h1><p className="hero-description">Bar-quality cocktails, built exactly how you like them. From our menu or straight from your imagination.</p><div className="hero-actions"><a className="primary-button" href="#menu">Order a cocktail <span>↗</span></a><button className="outline-button" onClick={() => setShowBuilder(true)}>Build your own <span>✦</span></button></div><div className="hero-proof"><div className="faces"><span>✦</span><span>J</span><span>M</span></div><p><strong>4.9/5</strong> from 2,000+ happy sippers</p></div></div><div className="hero-art" aria-label="Pink cocktail with citrus garnish" role="img"><div className="hero-art-label">Made for<br /><strong>golden hour</strong></div><div className="hero-sticker">HAND<br />CRAFTED</div></div></section>
-        <section className="builder-banner" id="reorder"><div className="builder-mark-large">✦</div><div><p className="eyebrow">The signature TIPSYGO experience</p><h2>Don&apos;t just order.<br /><em>Make it yours.</em></h2><p>Choose your spirit, mood, finish and extras. Give it a name. We&apos;ll make it a classic.</p></div><button className="dark-button" onClick={() => setShowBuilder(true)}>Build your cocktail <span>→</span></button><div className="banner-scribble">YOU<br />MAKE<br />THE<br /><em>RULES</em></div></section>
-        <section className="menu-section" id="menu"><div className="section-heading"><div><p className="eyebrow">Pick your poison</p><h2>Something for<br /><em>every mood.</em></h2></div><div className="search-wrap"><span>⌕</span><input id="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search cocktails" aria-label="Search cocktails" /></div></div><div className="category-row" role="tablist">{categories.map((item) => <button key={item} className={category === item ? "category active" : "category"} onClick={() => setCategory(item)}>{item}</button>)}</div><div className="cocktail-grid">{filteredCocktails.map((drink) => <article className="cocktail-card" key={drink.id}><div className={`drink-image ${drink.tone}`} style={{ backgroundImage: `url(${drink.image})` }}><span className="strength-pill">{drink.strength}</span><button className="favorite" aria-label={`Favourite ${drink.name}`}>♡</button><span className="image-number">0{drink.id}</span></div><div className="drink-meta"><div><h3>{drink.name}</h3><p>{drink.note}</p></div><strong>${drink.price}</strong></div><button className="add-button" onClick={() => openCustomization(drink)}>Customize & add <span>+</span></button></article>)}</div>{filteredCocktails.length === 0 && <p className="empty-state">No sips found. Try a different mood.</p>}<div className="view-all"><button onClick={() => { setCategory("All sips"); setQuery(""); }}>View all cocktails <span>→</span></button></div></section>
+        <header className="topbar"><a className="brand brand-logo" href="#top" aria-label="Tipsygo home"><Image src="/tipsygo-logo-v2.png" alt="TIPSYGO" width={2048} height={768} priority /></a><nav className="desktop-nav" aria-label="Main navigation"><a href="#menu">Explore</a><a href="#how-it-works">How it works</a><a href="#reorder">Create a drink</a></nav><div className="header-actions"><button className="my-mixes-button" onClick={openCreations}>My mixes</button><button className="icon-button" aria-label="Search" onClick={() => document.getElementById("search")?.focus()}>⌕</button><button className="cart-button" onClick={() => document.getElementById("cart")?.scrollIntoView({ behavior: "smooth" })}>Bag <span>{bagCount}</span></button><button className="avatar" aria-label="View your orders" onClick={() => setShowAccount(true)}>S</button></div></header>
+        <section className="hero" id="top"><div className="hero-copy"><p className="eyebrow">Cocktails on demand <span>•</span> Delivered in 30 min</p><h1>Your night.<br /><em>Your mix.</em><br />Delivered.</h1><p className="hero-description">Bar-quality cocktails, built exactly how you like them. From our menu or straight from your imagination.</p><div className="hero-actions"><a className="primary-button" href="#menu">Order a cocktail <span>↗</span></a><button className="outline-button" onClick={() => (setBuilderStep(0), setShowBuilder(true))}>Build your own <span>✦</span></button></div><div className="hero-proof"><div className="faces"><span>✦</span><span>J</span><span>M</span></div><p><strong>4.9/5</strong> from 2,000+ happy sippers</p></div></div><div className="hero-art" aria-label="Pink cocktail with citrus garnish" role="img"><div className="hero-art-label">Made for<br /><strong>golden hour</strong></div><div className="hero-sticker">HAND<br />CRAFTED</div></div></section>
+        <section className="builder-banner" id="reorder"><div className="builder-mark-large">✦</div><div><p className="eyebrow">The signature TIPSYGO experience</p><h2>Don&apos;t just order.<br /><em>Make it yours.</em></h2><p>Choose your spirit, mood, finish and extras. Give it a name. We&apos;ll make it a classic.</p></div><button className="dark-button" onClick={() => (setBuilderStep(0), setShowBuilder(true))}>Build your cocktail <span>→</span></button><div className="banner-scribble">YOU<br />MAKE<br />THE<br /><em>RULES</em></div></section>
+        <section className="menu-section" id="menu"><div className="section-heading"><div><p className="eyebrow">Pick your poison</p><h2>Something for<br /><em>every mood.</em></h2></div><div className="search-wrap"><span>⌕</span><input id="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search cocktails" aria-label="Search cocktails" /></div></div>{!menuLoading && !menuError && <div className="category-row" role="tablist">{categories.map((item) => <button key={item} className={category === item ? "category active" : "category"} onClick={() => setCategory(item)}>{item}</button>)}</div>}{menuLoading && <p className="empty-state" role="status">Mixing up today’s menu…</p>}{menuError && <p className="flow-error" role="alert">{menuError}</p>}<div className="cocktail-grid">{filteredCocktails.map((drink, index) => <article className={drink.available === false ? "cocktail-card sold-out" : "cocktail-card"} key={drink.id}><div className={`drink-image ${drink.tone}`} style={{ backgroundImage: `url(${drink.image})` }}>{drink.featured && <span className="featured-pill">Featured</span>}{drink.available === false && <span className="sold-out-pill">Sold out</span>}<span className="strength-pill">{drink.strength}</span><button className="favorite" aria-label={`Favourite ${drink.name}`}>♡</button><span className="image-number">{String(index + 1).padStart(2, "0")}</span></div><div className="drink-meta"><div><h3>{drink.name}</h3><p>{drink.note}</p></div><strong>${drink.price.toFixed(2)}</strong></div><button className="add-button" disabled={drink.available === false} onClick={() => openCustomization(drink)}>{drink.available === false ? "Currently unavailable" : "Customize & add"} <span>{drink.available === false ? "—" : "+"}</span></button></article>)}</div>{!menuLoading && !menuError && filteredCocktails.length === 0 && <p className="empty-state">No sips found. Try a different mood.</p>}<div className="view-all"><button onClick={() => { setCategory("All sips"); setQuery(""); }}>View all cocktails <span>→</span></button></div></section>
+        {community.length > 0 && <section className="community-section" id="community"><div className="section-heading"><div><p className="eyebrow">Made by the crowd</p><h2>Community<br /><em>creations.</em></h2></div><p>Original mixes created, shared and approved by the TipsyGo community.</p></div><div className="community-grid">{community.map((creation, index) => <article key={creation.id}><div className="community-art"><span>{creation.featured ? "TipsyGo pick" : `${creation.orderCount} orders`}</span><button className={creation.liked ? "community-like liked" : "community-like"} aria-label={`${creation.liked ? "Unlike" : "Like"} ${creation.name}`} onClick={() => toggleCommunityLike(creation)}>♥ {creation.likeCount}</button><b>✦</b><small>{String(index + 1).padStart(2, "0")}</small></div><h3>{creation.name}</h3><p>{Object.values(creation.choices).join(" · ")}</p><div><strong>${(creation.unitCents / 100).toFixed(2)}</strong><button onClick={() => addCommunityCreation(creation)} disabled={bagCount >= 40}>Try this mix +</button></div></article>)}</div></section>}
         <section className="how-section" id="how-it-works"><p className="eyebrow">Good times, made easy</p><h2>From our bar<br /><em>to your door.</em></h2><div className="steps"><div><span>01</span><h3>Pick your vibe</h3><p>Choose from classics, signatures or mood-based sips.</p></div><div><span>02</span><h3>Make it yours</h3><p>Customise the details that make your drink, yours.</p></div><div><span>03</span><h3>We make the magic</h3><p>Freshly mixed, packed with care, at your door in 30.</p></div></div></section>
-        <aside className="cart-drawer" id="cart"><div><p className="eyebrow">Your order</p><h2>In the bag <span>{cart.length}</span></h2></div>{cart.length ? <><div className="cart-items">{cart.map((drink, index) => <div className="cart-item" key={`${drink.id}-${index}`}><div className={`mini-image ${drink.tone}`} style={{ backgroundImage: `url(${drink.image})` }} /><div><strong>{drink.name}</strong><p>{drink.customization || "Classic build"}</p></div><span>${drink.price}</span></div>)}</div><div className="cart-total"><span>Subtotal</span><strong>${subtotal.toFixed(2)}</strong></div><button className="primary-button checkout" onClick={() => setShowCheckout(true)}>Checkout <span>→</span></button></> : <p className="cart-empty">Your next good decision starts here.</p>}</aside>
-        {orderPlaced && <section className="order-status" id="order-status"><div className="status-topline"><div><p className="eyebrow">Order confirmed <span>✦</span></p><h2>Good choice.<br /><em>We&apos;re on it.</em></h2></div><div className="order-code"><span>Order number</span><strong>{orderNumber}</strong><small>Arriving in 25–35 min</small></div></div><div className="status-timeline"><div className="status-step active"><span className="status-dot">✓</span><div><strong>Order received</strong><p>We&apos;ve got your order and payment.</p></div></div><div className="status-step active"><span className="status-dot">✓</span><div><strong>Payment confirmed</strong><p>Your order is safely in the queue.</p></div></div><div className="status-step current"><span className="status-dot">03</span><div><strong>Preparing your cocktails</strong><p>Our mixologist is shaking things up.</p></div></div><div className="status-step"><span className="status-dot">04</span><div><strong>On the way</strong><p>Your driver will be assigned soon.</p></div></div><div className="status-step"><span className="status-dot">05</span><div><strong>Delivered</strong><p>Enjoy responsibly.</p></div></div></div><button className="dark-button status-action" onClick={() => setOrderPlaced(false)}>Back to menu <span>↗</span></button></section>}
-        {showAccount && <div className="modal-backdrop account-backdrop" role="dialog" aria-modal="true" aria-label="Customer account"><div className="account-modal"><button className="modal-close" onClick={() => setShowAccount(false)} aria-label="Close account">×</button><div className="account-identity"><div className="account-avatar">S</div><div><p className="eyebrow">Your account <span>✦</span></p><h2>Hi, Shifu.</h2><p>shifu@example.com</p></div></div><div className="loyalty-strip"><span>✦</span><div><strong>240 loyalty points</strong><small>60 points until your next free cocktail</small></div><button>View rewards →</button></div><div className="account-grid"><section><p className="account-label">Saved addresses</p><div className="account-row"><span>Home</span><strong>14 Palm Avenue, Westside</strong><button aria-label="Edit home address">⋯</button></div><button className="account-link">+ Add new address</button></section><section><p className="account-label">Saved creations</p><div className="account-row"><span>✦</span><strong>Shifu&apos;s Sunset</strong><button aria-label="Reorder Shifu's Sunset">↗</button></div><button className="account-link">View all saved cocktails</button></section></div><section className="recent-orders"><p className="account-label">Recent orders</p><div className="order-history-row"><span>#TG-1039</span><strong>Mango Heatwave · 2 cocktails</strong><small>Delivered · $31.50</small><button aria-label="Reorder recent order">Reorder ↗</button></div><div className="order-history-row"><span>#TG-1022</span><strong>Shifu&apos;s Sunset · 1 cocktail</strong><small>Delivered · $17.00</small><button aria-label="Reorder recent order">Reorder ↗</button></div></section><button className="account-logout" onClick={() => setShowAccount(false)}>Sign out</button></div></div>}
-        {showCheckout && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Checkout"><div className="checkout-modal"><button className="modal-close" onClick={() => setShowCheckout(false)} aria-label="Close checkout">×</button><div className="checkout-heading"><p className="eyebrow">Almost there <span>✦</span></p><h2>Make it<br /><em>yours.</em></h2></div><div className="checkout-section"><p className="checkout-label">How should we get it to you?</p><div className="segmented-control"><button className={deliveryMode === "Delivery" ? "selected" : ""} onClick={() => setDeliveryMode("Delivery")}>Delivery <span>$4</span></button><button className={deliveryMode === "Pickup" ? "selected" : ""} onClick={() => setDeliveryMode("Pickup")}>Pickup <span>Free</span></button></div></div>{deliveryMode === "Delivery" && <div className="checkout-fields"><label>Delivery address<input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Street, area, city" /></label><label>Delivery instructions <span>Optional</span><textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="Gate code, quiet drop-off, not too much lime..." rows={2} /></label></div>}<div className="checkout-section"><p className="checkout-label">Payment method</p><div className="payment-options">{["Card", "Cash", "Mobile money"].map((method) => <button key={method} className={paymentMethod === method ? "selected" : ""} onClick={() => setPaymentMethod(method)}>{method}<span>{paymentMethod === method ? "✓" : ""}</span></button>)}</div></div><div className="promo-row"><input value={promo} onChange={(event) => setPromo(event.target.value.toUpperCase())} placeholder="Promo code" aria-label="Promo code" /><button onClick={() => setPromoApplied(promo.trim().length > 0)}>Apply</button>{promoApplied && <small>10% off applied</small>}</div><div className="checkout-summary"><div><span>Subtotal</span><span>${subtotal.toFixed(2)}</span></div><div><span>{deliveryMode === "Delivery" ? "Delivery" : "Pickup"}</span><span>{deliveryFee ? `$${deliveryFee.toFixed(2)}` : "Free"}</span></div><div><span>Service fee</span><span>${serviceFee.toFixed(2)}</span></div>{promoApplied && <div className="discount-line"><span>Promo discount</span><span>-${discount.toFixed(2)}</span></div>}<div className="checkout-total"><strong>Total</strong><strong>${orderTotal.toFixed(2)}</strong></div></div><button className="primary-button place-order" onClick={placeOrder}>Place order <span>→</span></button></div></div>}
-        {customizing && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Customize ${customizing.name}`}><div className="customize-modal"><button className="modal-close" onClick={() => setCustomizing(null)} aria-label="Close customization">×</button><div className="customize-heading"><div className={`customize-image ${customizing.tone}`} style={{ backgroundImage: `url(${customizing.image})` }} /><div><p className="eyebrow">Make it yours <span>✦</span></p><h2>{customizing.name}</h2><p>{customizing.note}</p></div></div><div className="custom-groups">{customizationGroups.map((group) => <div className="custom-group" key={group.key}><p>{group.label}</p><div className="custom-options">{group.options.map((item) => <button key={item.label} className={customization[group.key].label === item.label ? "custom-option selected" : "custom-option"} onClick={() => setCustomization((current) => ({ ...current, [group.key]: item }))}>{item.label}{item.price > 0 && <span>+${item.price}</span>}</button>)}</div></div>)}</div><div className="customize-footer"><span>Total <strong>${customizationPrice}</strong></span><button className="dark-button" onClick={addCustomizedDrink}>Add customized cocktail <span>✦</span></button></div></div></div>}
-        {showBuilder && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Build your cocktail"><div className="builder-modal"><button className="modal-close" onClick={() => setShowBuilder(false)} aria-label="Close builder">×</button><div className="builder-modal-intro"><p className="eyebrow">Build your own <span>✦</span></p><h2>Your rules.<br /><em>Your cocktail.</em></h2><div className="step-count">0{builderStep + 1} <span>/ 03</span></div></div><div className="builder-option"><p>{builderStep === 0 ? "Start with a spirit" : builderStep === 1 ? "Choose your mood" : "Finish with a flourish"}</p><div className="option-list">{(builderStep === 0 ? options.spirit : builderStep === 1 ? options.mixer : options.finish).map((item) => { const key = builderStep === 0 ? "spirit" : builderStep === 1 ? "mixer" : "finish"; return <button key={item.label} className={builder[key].label === item.label ? "option selected" : "option"} onClick={() => setBuilder((current) => ({ ...current, [key]: item }))}>{item.label}<span>{item.price ? `+$${item.price}` : "Included"}</span></button>; })}</div></div><div className="builder-footer"><span>Estimated total <strong>${builderPrice}</strong></span><button className="dark-button" onClick={() => builderStep < 2 ? setBuilderStep(builderStep + 1) : (setShowBuilder(false), setCart((current) => [...current, { id: 99, name: "Your Custom Creation", note: `${builder.spirit.label} · ${builder.mixer.label}`, price: builderPrice, category: "Custom", image: cocktails[0].image, strength: "Your way", tone: "sunset" }]))}>{builderStep < 2 ? "Next step →" : "Add to bag ✦"}</button></div></div></div>}
+        <aside className="cart-drawer" id="cart"><div><p className="eyebrow">Your order</p><h2>In the bag <span>{bagCount} {bagCount === 1 ? "drink" : "drinks"}</span></h2></div>{cart.length ? <><div className="cart-items">{cart.map((drink, index) => <div className="cart-item" key={`${drink.id}-${index}`}><div className={`mini-image ${drink.tone}`} style={{ backgroundImage: `url(${drink.image})` }} /><div className="cart-item-copy"><strong>{drink.name}</strong><p>{drink.customization || "Classic build"}</p>{drink.id !== -1 && <button className="edit-options" onClick={() => openCustomization(drink, index)}>Edit options</button>}<div className="quantity-control" aria-label={`Quantity for ${drink.name}`}><button aria-label={`Decrease ${drink.name} quantity`} disabled={drink.selection.quantity === 1} onClick={() => changeQuantity(index, -1)}>−</button><span aria-live="polite">{drink.selection.quantity}</span><button aria-label={`Increase ${drink.name} quantity`} disabled={drink.selection.quantity === 20 || bagCount === 40} onClick={() => changeQuantity(index, 1)}>+</button></div></div><div className="cart-item-actions"><strong>${(drink.price * drink.selection.quantity).toFixed(2)}</strong><small>${drink.price.toFixed(2)} each</small><button aria-label={`Remove ${drink.name} from bag`} onClick={() => setCart(current => current.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div></div>)}</div>{bagCount === 40 && <p className="bag-limit" role="status">Maximum order size reached. Remove a drink to add another.</p>}<div className="cart-total"><span>Subtotal · {bagCount} {bagCount === 1 ? "drink" : "drinks"}</span><strong>${subtotal.toFixed(2)}</strong></div><button className="primary-button checkout" onClick={() => setShowCheckout(true)}>Checkout <span>→</span></button></> : <p className="cart-empty">Your next good decision starts here.</p>}</aside>
+        <div className={bagMessage ? "bag-toast visible" : "bag-toast"} role="status" aria-live="polite">{bagMessage}<button onClick={() => document.getElementById("cart")?.scrollIntoView({ behavior: "smooth" })}>View bag</button></div>
+        <OrderTracker />
+        {showAccount && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Your orders"><div className="checkout-modal"><button className="modal-close" onClick={() => setShowAccount(false)} aria-label="Close orders">×</button><p className="eyebrow">Your orders</p><h2>Keep an eye<br /><em>on your mix.</em></h2><p>Your latest order is saved in this browser. Scroll to the order tracker for updates from the team.</p><button className="dark-button" onClick={() => { setShowAccount(false); document.getElementById("order-status")?.scrollIntoView({ behavior: "smooth" }); }}>View latest order</button></div></div>}
+        {showCreations && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="My creations"><div className="checkout-modal creations-modal"><button className="modal-close" onClick={() => setShowCreations(false)} aria-label="Close creations">×</button><p className="eyebrow">Your private recipe book</p><h2>My <em>creations.</em></h2>{creationsLoading && <p role="status">Loading your mixes…</p>}{creationsError && <p className="flow-error" role="alert">{creationsError}</p>}{shareMessage && <p className="flow-hint" role="status">{shareMessage}</p>}{!creationsLoading && !creationsError && !creations.length && <div className="empty-creations"><p>Name and order a cocktail from the builder. It will appear here after checkout.</p><button className="dark-button" onClick={() => { setShowCreations(false); setBuilderStep(0); setCreationName(""); setShowBuilder(true); }}>Create your first mix</button></div>}<div className="creation-list">{creations.map(creation => <article key={creation.id}><div><span>{creation.orderCount} order{creation.orderCount === 1 ? "" : "s"}</span><h3>{creation.name}</h3><p>{Object.values(creation.choices).join(" · ")}</p></div><div><strong>${(creation.unitCents / 100).toFixed(2)}</strong><small>{creation.moderationStatus === "private" ? "Private" : creation.moderationStatus === "submitted" ? "In review" : creation.moderationStatus}</small><button onClick={() => reorderCreation(creation)} disabled={bagCount >= 40}>Add to bag</button>{["private", "rejected", "hidden"].includes(creation.moderationStatus) && <button className="submit-mix" onClick={() => submitCommunity(creation)}>Submit to menu</button>}<button className="share-mix" onClick={() => shareCreation(creation, "copy")}>Copy link</button><button className="share-mix" onClick={() => shareCreation(creation, "whatsapp")}>WhatsApp</button></div></article>)}</div></div></div>}
+        {showCheckout && <Checkout items={cart.map(item => item.selection)} subtotalCents={Math.round(subtotal * 100)} onClose={() => setShowCheckout(false)} onPlaced={() => { setCart([]); setShowCheckout(false); setTimeout(() => document.getElementById("order-status")?.scrollIntoView({ behavior: "smooth" }), 200); }} />}
+        {customizing && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={`Customize ${customizing.name}`}><div className="customize-modal"><button className="modal-close" onClick={() => { setCustomizing(null); setEditingCartIndex(null); }} aria-label="Close customization">×</button><div className="customize-heading"><div className={`customize-image ${customizing.tone}`} style={{ backgroundImage: `url(${customizing.image})` }} /><div><p className="eyebrow">{editingCartIndex === null ? "Make it yours" : "Update your drink"} <span>✦</span></p><h2>{customizing.name}</h2><p>{customizing.note}</p></div></div><div className="custom-groups">{customizationGroups.map((group) => <div className="custom-group" key={group.key}><p>{group.label}</p><div className="custom-options">{group.options.map((item) => <button key={item.label} className={customization[group.key].label === item.label ? "custom-option selected" : "custom-option"} onClick={() => setCustomization((current) => ({ ...current, [group.key]: item }))}>{item.label}{item.price > 0 && <span>+${item.price}</span>}</button>)}</div></div>)}</div><div className="customize-footer"><span>Total <strong>${customizationPrice.toFixed(2)}</strong></span><button className="dark-button" onClick={addCustomizedDrink}>{editingCartIndex === null ? "Add customized cocktail" : "Save changes"} <span>✦</span></button></div></div></div>}
+        {showBuilder && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Build your cocktail"><div className="builder-modal"><button className="modal-close" onClick={() => setShowBuilder(false)} aria-label="Close builder">×</button><div className="builder-modal-intro"><p className="eyebrow">Build your own <span>✦</span></p><h2>Your rules.<br /><em>Your cocktail.</em></h2><div className="step-count">0{builderStep + 1} <span>/ 03</span></div></div><div className="builder-option"><p>{builderStep === 0 ? "Start with a spirit" : builderStep === 1 ? "Choose your mood" : "Finish with a flourish"}</p><div className="option-list">{(builderStep === 0 ? options.spirit : builderStep === 1 ? options.mixer : options.finish).map((item) => { const key = builderStep === 0 ? "spirit" : builderStep === 1 ? "mixer" : "finish"; return <button key={item.label} className={builder[key].label === item.label ? "option selected" : "option"} onClick={() => setBuilder((current) => ({ ...current, [key]: item }))}>{item.label}<span>{item.price ? `+$${item.price}` : "Included"}</span></button>; })}</div>{builderStep === 2 && <label className="creation-name">Name your cocktail<input aria-label="Cocktail name" required minLength={2} maxLength={60} value={creationName} onChange={event => setCreationName(event.target.value)} placeholder="e.g. Sunset Trouble" /></label>}</div><div className="builder-footer"><span>Estimated total <strong>${builderPrice.toFixed(2)}</strong></span><button className="dark-button" disabled={builderStep === 2 && (creationName.trim().length < 2 || bagCount >= 40)} onClick={() => builderStep < 2 ? setBuilderStep(builderStep + 1) : addBuilderCreation()}>{builderStep < 2 ? "Next step →" : "Name it & add to bag ✦"}</button></div></div></div>}
     </main>
   );
 }
