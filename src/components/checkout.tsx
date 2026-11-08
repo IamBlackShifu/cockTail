@@ -12,11 +12,14 @@ export function Checkout({ items, subtotalCents, onClose, onPlaced }: {
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [instructions, setInstructions] = useState("");
+  const [promoCode, setPromoCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const [error, setError] = useState("");
   const attempt = useRef<PendingOrder | null>(null);
-  const amount = totals(subtotalCents, fulfillment);
+  const normalizedPromo = promoCode.trim().toUpperCase();
+  const estimatedDiscount = /^MIX-[A-F0-9]{8}$/.test(normalizedPromo) ? Math.round(subtotalCents * .1) : 0;
+  const amount = totals(subtotalCents, fulfillment, estimatedDiscount);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -29,7 +32,7 @@ export function Checkout({ items, subtotalCents, onClose, onPlaced }: {
       if (!attempt.current && sessionStorage.getItem(pendingKey)) {
         throw new Error("An earlier order needs confirmation. Close checkout and use Retry confirmation in your order tracker.");
       }
-      attempt.current ??= prepareOrder({ customer: { name, phone }, fulfillment, address, instructions, items });
+      attempt.current ??= prepareOrder({ customer: { name, phone }, fulfillment, address, instructions, promoCode: normalizedPromo || undefined, items });
       await sendOrder(attempt.current);
       onPlaced();
     } catch (failure) {
@@ -53,6 +56,7 @@ export function Checkout({ items, subtotalCents, onClose, onPlaced }: {
           <label>Phone number<input type="tel" autoComplete="tel" required minLength={7} maxLength={24} value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="A number we can reach you on" /></label>
           {fulfillment === "Delivery" && <label>Delivery address<textarea autoComplete="street-address" required minLength={8} maxLength={300} value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Street, area and city" rows={2} /></label>}
           <label>Order notes <span>Optional</span><textarea maxLength={500} value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder={fulfillment === "Delivery" ? "Landmark, gate code or preparation notes" : "Anything the team should know?"} rows={2} /></label>
+          <label>Creator reward code <span>Optional</span><input maxLength={12} value={promoCode} onChange={event => { setPromoCode(event.target.value.toUpperCase()); attempt.current = null; }} placeholder="MIX-XXXXXXXX" /></label>
         </div>
       </fieldset>
       <div className="payment-notice"><strong>Pay on {fulfillment === "Delivery" ? "delivery" : "pickup"}</strong><p>No online charge. The team will confirm your order and arrange handover with you.</p></div>
@@ -60,6 +64,7 @@ export function Checkout({ items, subtotalCents, onClose, onPlaced }: {
         <div><span>{items.length} drink{items.length === 1 ? "" : "s"}</span><span>{money(amount.subtotalCents)}</span></div>
         <div><span>{fulfillment}</span><span>{amount.deliveryCents ? money(amount.deliveryCents) : "Free"}</span></div>
         <div><span>Service fee (5%)</span><span>{money(amount.serviceCents)}</span></div>
+        {amount.discountCents > 0 && <div><span>Creator reward (estimated)</span><span>−{money(amount.discountCents)}</span></div>}
         <div className="checkout-total"><strong>Total due</strong><strong>{money(amount.totalCents)}</strong></div>
       </div>
       {error && <p className="flow-error" role="alert">{error}</p>}

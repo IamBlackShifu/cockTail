@@ -3,12 +3,16 @@ import { db, transaction } from "./database";
 import { hash } from "./http";
 import { nextStatus, OrderError, statuses, statusLabels, totals, validateOrder, type Order, type OrderStatus } from "../orders";
 import { activeCocktails } from "./product-store";
+import { activeBuilderOptions } from "./ingredient-store";
 
 type Row = { data: string; request_hash: string; token_hash: string };
 export function createOrder(value: unknown, key: string, token: string) {
   if (!/^[a-f0-9-]{36}$/.test(key) || !/^[a-f0-9]{64}$/.test(token)) throw new OrderError("Please refresh checkout before submitting.");
-  const validated = validateOrder(value, activeCocktails());
+  const validated = validateOrder(value, activeCocktails(), activeBuilderOptions());
   const rawItems = (value as { items?: unknown[] }).items || [];
+  const rawPromoCode = (value as { promoCode?: unknown }).promoCode;
+  const promoCode = typeof rawPromoCode === "string" ? rawPromoCode.trim().toUpperCase() : "";
+  if (promoCode && !/^MIX-[A-F0-9]{8}$/.test(promoCode)) throw new OrderError("That reward code is invalid.");
   const creationInputs = rawItems.map(raw => {
     if (!raw || typeof raw !== "object" || (raw as { cocktailId?: unknown }).cocktailId !== -1) return null;
     const { creationName, creatorKey, creationId, sourceCreationId, choices } = raw as { creationName?: unknown; creatorKey?: unknown; creationId?: unknown; sourceCreationId?: unknown; choices?: unknown };
@@ -27,7 +31,10 @@ export function createOrder(value: unknown, key: string, token: string) {
     validated.items[index].unitCents = Number(source.unit_cents);
   });
   const subtotalCents = validated.items.reduce((sum, item) => sum + item.unitCents * item.quantity, 0);
-  Object.assign(validated, totals(subtotalCents, validated.fulfillment));
+  const reward = promoCode ? db().prepare("SELECT percent_off FROM reward_codes WHERE code = ? AND active = 1 AND uses < max_uses AND expires_at > ?").get(promoCode, new Date().toISOString()) : undefined;
+  if (promoCode && !reward) throw new OrderError("That reward code is expired or has reached its use limit.");
+  const discountCents = reward ? Math.round(subtotalCents * Number(reward.percent_off) / 100) : 0;
+  Object.assign(validated, totals(subtotalCents, validated.fulfillment, discountCents));
   const requestHash = hash(JSON.stringify({ validated, creationInputs }));
   return transaction(() => {
     const previous = db().prepare("SELECT data, request_hash, token_hash FROM orders WHERE request_key = ?").get(key) as Row | undefined;
@@ -39,6 +46,10 @@ export function createOrder(value: unknown, key: string, token: string) {
     const now = new Date().toISOString();
     const order: Order = { ...validated, id, number: `TG-${id.replaceAll("-", "").slice(0, 10).toUpperCase()}`, createdAt: now, updatedAt: now, version: 1, status: "new", payment: "unpaid", history: [{ at: now, label: "Order received" }] };
     db().prepare("INSERT INTO orders VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, key, requestHash, hash(token), now, 1, JSON.stringify(order));
+    if (promoCode) {
+      const redeemed = db().prepare("UPDATE reward_codes SET uses = uses + 1 WHERE code = ? AND active = 1 AND uses < max_uses AND expires_at > ?").run(promoCode, now);
+      if (!redeemed.changes) throw new OrderError("That reward code is no longer available.", 409);
+    }
     creationInputs.forEach((creation, index) => {
       if (!creation) return;
       if (creation.creationId) {
@@ -51,6 +62,7 @@ export function createOrder(value: unknown, key: string, token: string) {
         if (!source) throw new OrderError("That shared creation is no longer available.");
         if (source.name !== creation.name || source.choices !== JSON.stringify(creation.choices)) throw new OrderError("That shared recipe has changed. Open its link again.");
         db().prepare("UPDATE creations SET order_count = order_count + 1 WHERE id = ?").run(creation.sourceCreationId);
+        db().prepare("INSERT INTO creation_order_events (creation_id, quantity, created_at) VALUES (?, ?, ?)").run(creation.sourceCreationId, validated.items[index].quantity, now);
         if (source.owner_hash === hash(creation.creatorKey)) return;
       }
       db().prepare("INSERT INTO creations (id, owner_hash, name, choices, unit_cents, order_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")

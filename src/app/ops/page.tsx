@@ -6,6 +6,8 @@ import Image from "next/image";
 import { money, nextStatus, statuses, statusLabels, type Order } from "@/lib/orders";
 import { ProductManager } from "@/components/product-manager";
 import { CommunityManager } from "@/components/community-manager";
+import { IngredientManager } from "@/components/ingredient-manager";
+import { AnalyticsDashboard } from "@/components/analytics-dashboard";
 import "./ops.css";
 import "./orders.css";
 
@@ -14,7 +16,7 @@ export default function OperationsPage() {
   const [auth, setAuth] = useState<"checking" | "signed-out" | "signed-in">("checking");
   const [password, setPassword] = useState("");
   const [orders, setOrders] = useState<Order[]>([]);
-  const [section, setSection] = useState<"orders" | "products" | "community">("orders");
+  const [section, setSection] = useState<"orders" | "products" | "ingredients" | "community" | "analytics">("orders");
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [summary, setSummary] = useState<{ counts: Record<string, number>; unpaidCents: number }>({ counts: {}, unpaidCents: 0 });
@@ -107,10 +109,10 @@ export default function OperationsPage() {
   </form></main>;
   return <main className="ops-shell real-ops">
     <aside className="ops-sidebar"><Link className="ops-brand ops-logo" href="/"><Image src="/tipsygo-logo-v2.png" alt="TIPSYGO" width={2048} height={768} priority /></Link><div className="location-chip">Order management</div>
-      <nav className="ops-nav" aria-label="Operations views"><button className={section === "orders" && queue === "Active" ? "active" : ""} onClick={() => { setSection("orders"); setQueue("Active"); setPage(0); }}>Orders in motion</button><button className={section === "orders" && queue === "All" ? "active" : ""} onClick={() => { setSection("orders"); setQueue("All"); setPage(0); }}>Order history</button><button className={section === "products" ? "active" : ""} onClick={() => setSection("products")}>Products &amp; prices</button><button className={section === "community" ? "active" : ""} onClick={() => setSection("community")}>Community mixes</button></nav>
+      <nav className="ops-nav" aria-label="Operations views"><button className={section === "orders" && queue === "Active" ? "active" : ""} onClick={() => { setSection("orders"); setQueue("Active"); setPage(0); }}>Orders in motion</button><button className={section === "orders" && queue === "All" ? "active" : ""} onClick={() => { setSection("orders"); setQueue("All"); setPage(0); }}>Order history</button><button className={section === "analytics" ? "active" : ""} onClick={() => setSection("analytics")}>Analytics</button><button className={section === "products" ? "active" : ""} onClick={() => setSection("products")}>Products &amp; prices</button><button className={section === "ingredients" ? "active" : ""} onClick={() => setSection("ingredients")}>Ingredients</button><button className={section === "community" ? "active" : ""} onClick={() => setSection("community")}>Community mixes</button></nav>
       <div className="sidebar-footer"><span>Staff session</span><button onClick={signOut} disabled={busy}>Sign out</button></div>
     </aside>
-    <section className="ops-content">{section === "products" ? <ProductManager /> : section === "community" ? <CommunityManager /> : <><header className="ops-header"><div><p className="ops-kicker">The kitchen queue</p><h1>Every order.<br />One place.</h1></div><div className="ops-header-actions"><span className={online ? "sync-state" : "sync-state stale"}>{online ? `Updated ${updated}` : "Updates interrupted"}</span><button className="outline-ops-button" onClick={() => { setError(""); void load(); }}>Refresh</button></div></header>
+    <section className="ops-content">{section === "analytics" ? <AnalyticsDashboard /> : section === "products" ? <ProductManager /> : section === "ingredients" ? <IngredientManager /> : section === "community" ? <CommunityManager /> : <><header className="ops-header"><div><p className="ops-kicker">The kitchen queue</p><h1>Every order.<br />One place.</h1></div><div className="ops-header-actions"><span className={online ? "sync-state" : "sync-state stale"}>{online ? `Updated ${updated}` : "Updates interrupted"}</span><button className="outline-ops-button" onClick={() => { setError(""); void load(); }}>Refresh</button></div></header>
       <div className="metric-grid"><article><p>Received</p><strong>{summary.counts.new || 0}</strong><small>Waiting for the team</small></article><article><p>Preparing</p><strong>{summary.counts.preparing || 0}</strong><small>At the bar</small></article><article><p>Ready / on the way</p><strong>{(summary.counts.ready || 0) + (summary.counts.dispatched || 0)}</strong><small>Handover and delivery</small></article><article className="accent-metric"><p>Awaiting payment</p><strong>{money(summary.unpaidCents)}</strong><small>Across all saved orders</small></article></div>
       {error && <p className="ops-error" role="alert">{error}</p>}{notice && <p className="ops-notice" role="status">{notice}</p>}
       <section className="queue-panel"><div className="panel-heading"><div><p className="ops-kicker">Customer orders</p><h2>Orders in motion</h2></div><input className="order-search" aria-label="Search orders on this page" placeholder="Order, customer or phone" value={search} onChange={event => setSearch(event.target.value)} /></div>

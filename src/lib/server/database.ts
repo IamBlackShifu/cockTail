@@ -42,6 +42,32 @@ export function db() {
       creation_id TEXT NOT NULL, voter_hash TEXT NOT NULL, created_at TEXT NOT NULL,
       PRIMARY KEY (creation_id, voter_hash), FOREIGN KEY (creation_id) REFERENCES creations(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS ingredients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, group_name TEXT NOT NULL, label TEXT NOT NULL,
+      price_cents INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1,
+      available INTEGER NOT NULL DEFAULT 1, display_order INTEGER NOT NULL DEFAULT 0,
+      version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(group_name, label COLLATE NOCASE)
+    );
+    CREATE INDEX IF NOT EXISTS ingredients_group_order ON ingredients(group_name, active, display_order);
+    CREATE TABLE IF NOT EXISTS creator_profiles (
+      owner_hash TEXT PRIMARY KEY, public_slug TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS creation_order_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, creation_id TEXT NOT NULL, quantity INTEGER NOT NULL,
+      created_at TEXT NOT NULL, FOREIGN KEY (creation_id) REFERENCES creations(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS creation_order_events_week ON creation_order_events(created_at, creation_id);
+    CREATE TABLE IF NOT EXISTS community_settings (
+      key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS reward_codes (
+      code TEXT PRIMARY KEY, creation_id TEXT NOT NULL UNIQUE, owner_hash TEXT NOT NULL,
+      percent_off INTEGER NOT NULL, max_uses INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0,
+      expires_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+      FOREIGN KEY (creation_id) REFERENCES creations(id) ON DELETE CASCADE
+    );
   `);
   const columns = new Set((database.prepare("PRAGMA table_info(products)").all() as { name: string }[]).map(column => column.name));
   if (!columns.has("featured")) database.exec("ALTER TABLE products ADD COLUMN featured INTEGER NOT NULL DEFAULT 0");

@@ -1,6 +1,9 @@
 export type Cocktail = { id: number; name: string; note: string; price: number; category: string; image: string; strength: string; tone: string; available?: boolean; featured?: boolean; displayOrder?: number };
 export type ManagedProduct = Cocktail & { priceCents: number; active: boolean; available: boolean; featured: boolean; displayOrder: number; version: number; createdAt: string; updatedAt: string };
 export type CustomOption = { label: string; price: number };
+export type BuilderOptionGroup = "spirit" | "mixer" | "finish";
+export type ManagedIngredient = CustomOption & { id: number; group: BuilderOptionGroup; priceCents: number; active: boolean; available: boolean; displayOrder: number; version: number };
+export type BuilderOptions = Record<BuilderOptionGroup, CustomOption[]>;
 export const cocktails: Cocktail[] = [
   { id: 1, name: "Mango Heatwave", note: "Mango · chilli · lime", price: 13, category: "Fruity", image: "https://images.unsplash.com/photo-1551538827-9c037cb4f32a?auto=format&fit=crop&w=900&q=85", strength: "Medium", tone: "sunset" },
   { id: 2, name: "Velvet Negroni", note: "Gin · vermouth · orange", price: 15, category: "Strong", image: "https://images.unsplash.com/photo-1551024709-8f23befc6f87?auto=format&fit=crop&w=900&q=85", strength: "Strong", tone: "ruby" },
@@ -11,7 +14,7 @@ export const cocktails: Cocktail[] = [
 ];
 export const productTones = ["sunset", "ruby", "mint", "pink", "violet", "lime"] as const;
 export const categories = ["All sips", "Signature", "Classic", "Fruity", "Sour", "Strong", "Low Alcohol", "Mocktails"];
-export const options = { spirit: [{ label: "Vodka", price: 0 }, { label: "Gin", price: 1 }, { label: "Tequila", price: 1 }, { label: "Rum", price: 0 }], mixer: [{ label: "Passionfruit", price: 1 }, { label: "Tonic water", price: 0 }, { label: "Ginger beer", price: 1 }, { label: "Soda", price: 0 }], finish: [{ label: "Lime & mint", price: 0 }, { label: "Chilli salt", price: 1 }, { label: "Berry crown", price: 2 }] };
+export const options: BuilderOptions = { spirit: [{ label: "Vodka", price: 0 }, { label: "Gin", price: 1 }, { label: "Tequila", price: 1 }, { label: "Rum", price: 0 }], mixer: [{ label: "Passionfruit", price: 1 }, { label: "Tonic water", price: 0 }, { label: "Ginger beer", price: 1 }, { label: "Soda", price: 0 }], finish: [{ label: "Lime & mint", price: 0 }, { label: "Chilli salt", price: 1 }, { label: "Berry crown", price: 2 }] };
 export const customizationGroups: { key: keyof Customization; label: string; options: CustomOption[] }[] = [
   { key: "size", label: "Choose your size", options: [{ label: "Classic", price: 0 }, { label: "Large cup", price: 3 }] },
   { key: "sweetness", label: "Sweetness", options: [{ label: "No sugar", price: 0 }, { label: "Low", price: 0 }, { label: "Normal", price: 0 }, { label: "Extra sweet", price: 0 }] },

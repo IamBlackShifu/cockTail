@@ -1,4 +1,4 @@
-import { cocktails, customizationGroups, options } from "./catalog";
+import { cocktails, customizationGroups, options, type BuilderOptions } from "./catalog";
 
 export type OrderItemInput = { cocktailId: number; quantity: number; choices: Record<string, string>; creationName?: string; creatorKey?: string; creationId?: string; sourceCreationId?: string };
 export type OrderItem = { name: string; quantity: number; customization: string; unitCents: number };
@@ -8,7 +8,7 @@ export type OrderStatus = (typeof statuses)[number];
 export const statusLabels: Record<OrderStatus, string> = {
   new: "Received", preparing: "Preparing", ready: "Ready", dispatched: "On the way", completed: "Completed", cancelled: "Cancelled",
 };
-export type Totals = { subtotalCents: number; deliveryCents: number; serviceCents: number; totalCents: number };
+export type Totals = { subtotalCents: number; discountCents: number; deliveryCents: number; serviceCents: number; totalCents: number };
 export type Order = Totals & {
   id: string; number: string; createdAt: string; updatedAt: string; version: number;
   customer: { name: string; phone: string }; fulfillment: Fulfillment; address: string; instructions: string;
@@ -17,16 +17,18 @@ export type Order = Totals & {
 };
 export type Receipt = { id: string; token: string };
 export type CreationStatus = "private" | "submitted" | "published" | "rejected" | "hidden";
-export type SavedCreation = { id: string; name: string; choices: Record<string, string>; unitCents: number; orderCount: number; likeCount: number; liked?: boolean; createdAt: string; shareSlug?: string; moderationStatus: CreationStatus; featured: boolean };
-export type OrderInput = { customer: { name: string; phone: string }; fulfillment: Fulfillment; address: string; instructions: string; items: OrderItemInput[] };
+export type SavedCreation = { id: string; name: string; choices: Record<string, string>; unitCents: number; orderCount: number; likeCount: number; weeklyLikes?: number; weeklyOrders?: number; trendingRank?: number; challengeBadge?: string; rewardCode?: string; liked?: boolean; available?: boolean; creatorName?: string; creatorSlug?: string; createdAt: string; shareSlug?: string; moderationStatus: CreationStatus; featured: boolean };
+export type CommunityChallenge = { title: string; description: string; active: boolean; updatedAt: string };
+export type OrderInput = { customer: { name: string; phone: string }; fulfillment: Fulfillment; address: string; instructions: string; promoCode?: string; items: OrderItemInput[] };
 export class OrderError extends Error {
   constructor(message: string, public status = 400) { super(message); }
 }
 export const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
-export function totals(subtotalCents: number, fulfillment: Fulfillment): Totals {
+export function totals(subtotalCents: number, fulfillment: Fulfillment, discountCents = 0): Totals {
   const deliveryCents = fulfillment === "Delivery" && subtotalCents < 4000 ? 400 : 0;
-  const serviceCents = Math.round(subtotalCents * 0.05);
-  return { subtotalCents, deliveryCents, serviceCents, totalCents: subtotalCents + deliveryCents + serviceCents };
+  const discountedSubtotal = Math.max(0, subtotalCents - discountCents);
+  const serviceCents = Math.round(discountedSubtotal * 0.05);
+  return { subtotalCents, discountCents, deliveryCents, serviceCents, totalCents: discountedSubtotal + deliveryCents + serviceCents };
 }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new OrderError("Please check your order details.");
@@ -38,7 +40,7 @@ function text(value: unknown, label: string, min: number, max: number) {
   }
   return value.trim();
 }
-export function validateOrder(value: unknown, availableCocktails = cocktails) {
+export function validateOrder(value: unknown, availableCocktails = cocktails, availableBuilderOptions: BuilderOptions = options) {
   const input = object(value);
   const customer = object(input.customer);
   const name = text(customer.name, "Name", 2, 80);
@@ -56,7 +58,7 @@ export function validateOrder(value: unknown, availableCocktails = cocktails) {
     const drink = availableCocktails.find((entry) => entry.id === item.cocktailId);
     if (!drink && item.cocktailId !== -1) throw new OrderError("One of your drinks is no longer available. Please refresh the menu.");
     let unitCents = drink ? Math.round(drink.price * 100) : 1400;
-    const groups = drink ? customizationGroups : Object.entries(options).map(([key, values]) => ({ key, options: values }));
+    const groups = drink ? customizationGroups : Object.entries(availableBuilderOptions).map(([key, values]) => ({ key, options: values }));
     if (Object.keys(choices).length !== groups.length) throw new OrderError("Please choose all drink options again.");
     const labels = groups.map((group) => {
       const option = group.options.find((entry) => entry.label === choices[group.key]);
