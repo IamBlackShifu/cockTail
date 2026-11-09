@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { db, transaction } from "./database";
 import { hash } from "./http";
-import { nextStatus, OrderError, statuses, statusLabels, totals, validateOrder, type Order, type OrderStatus } from "../orders";
+import { nextStatus, OrderError, statuses, statusLabels, totals, validateOrder, type HandoverState, type Order, type OrderStatus } from "../orders";
 import { activeCocktails } from "./product-store";
 import { activeBuilderOptions } from "./ingredient-store";
 import { requireFulfillmentAvailable } from "./store-settings";
@@ -80,10 +80,15 @@ export function customerOrder(id: string, token: string) {
 }
 export function listOrders(page: number, view = "all") {
   const limit = 50;
-  if (!["all", "active", ...statuses].includes(view)) throw new OrderError("Invalid order view.");
+  if (!["all", "active", "unassigned", "delayed", ...statuses].includes(view)) throw new OrderError("Invalid order view.");
+  const now = new Date().toISOString();
   const rows = db().prepare(`SELECT data FROM orders
-    WHERE ? = 'all' OR (? = 'active' AND json_extract(data, '$.status') NOT IN ('completed', 'cancelled')) OR json_extract(data, '$.status') = ?
-    ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`).all(view, view, view, limit + 1, page * limit);
+    WHERE ? = 'all'
+      OR (? = 'active' AND json_extract(data, '$.status') NOT IN ('completed', 'cancelled'))
+      OR (? = 'unassigned' AND json_extract(data, '$.fulfillment') = 'Delivery' AND json_type(data, '$.handover') IS NULL AND json_extract(data, '$.status') NOT IN ('completed', 'cancelled'))
+      OR (? = 'delayed' AND json_extract(data, '$.handover.estimatedAt') < ? AND json_extract(data, '$.status') NOT IN ('completed', 'cancelled'))
+      OR json_extract(data, '$.status') = ?
+    ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`).all(view, view, view, view, now, view, limit + 1, page * limit);
   const counts = db().prepare("SELECT json_extract(data, '$.status') AS status, COUNT(*) AS count FROM orders GROUP BY status").all();
   const unpaid = db().prepare("SELECT COALESCE(SUM(json_extract(data, '$.totalCents')), 0) AS amount FROM orders WHERE json_extract(data, '$.payment') = 'unpaid' AND json_extract(data, '$.status') != 'cancelled'").get();
   const summary = { counts: Object.fromEntries(counts.map(row => [String(row.status), Number(row.count)])), unpaidCents: Number(unpaid?.amount || 0) };
@@ -121,6 +126,66 @@ export function updateOrder(id: string, value: unknown) {
     order.updatedAt = new Date().toISOString();
     order.history.push({ at: order.updatedAt, label });
     db().prepare("UPDATE orders SET version = ?, data = ? WHERE id = ?").run(order.version, JSON.stringify(order), id);
+    return order;
+  });
+}
+
+export function assignHandover(id: string, value: unknown) {
+  if (!value || typeof value !== "object") throw new OrderError("Invalid assignment.");
+  const raw = value as { version?: unknown; assigneeName?: unknown; assigneePhone?: unknown; etaMinutes?: unknown };
+  if (typeof raw.assigneeName !== "string" || raw.assigneeName.trim().length < 2 || raw.assigneeName.trim().length > 80) throw new OrderError("Assignee name must be between 2 and 80 characters.");
+  if (typeof raw.assigneePhone !== "string" || !/^[+\d() .-]{7,24}$/.test(raw.assigneePhone) || raw.assigneePhone.replace(/\D/g, "").length < 7) throw new OrderError("Enter a valid assignee phone number.");
+  if (raw.etaMinutes !== undefined && (!Number.isInteger(raw.etaMinutes) || Number(raw.etaMinutes) < 1 || Number(raw.etaMinutes) > 240)) throw new OrderError("ETA must be between 1 and 240 minutes.");
+  const assigneeName = raw.assigneeName.trim();
+  const assigneePhone = raw.assigneePhone.trim();
+  return transaction(() => {
+    const row = db().prepare("SELECT data FROM orders WHERE id = ?").get(id);
+    if (!row) throw new OrderError("Order not found.", 404);
+    const order = JSON.parse(String(row.data)) as Order;
+    if (order.version !== raw.version) throw new OrderError("Another staff member updated this order. Refresh and try again.", 409);
+    if (order.fulfillment !== "Delivery" || ["completed", "cancelled"].includes(order.status)) throw new OrderError("Only active delivery orders can be assigned.", 409);
+    const now = new Date();
+    order.handover = { assigneeName, assigneePhone, state: "assigned", assignedAt: now.toISOString(), updatedAt: now.toISOString(), ...(raw.etaMinutes === undefined ? {} : { estimatedAt: new Date(now.getTime() + Number(raw.etaMinutes) * 60000).toISOString() }) };
+    order.version += 1; order.updatedAt = now.toISOString(); order.history.push({ at: order.updatedAt, label: `Assigned to ${order.handover.assigneeName}` });
+    order.customerUpdates = [...(order.customerUpdates || []), { at: order.updatedAt, message: `${order.handover.assigneeName} has been assigned to your delivery.`, ...(order.handover.estimatedAt ? { estimatedAt: order.handover.estimatedAt } : {}) }];
+    const token = randomBytes(32).toString("hex");
+    db().prepare("UPDATE orders SET version = ?, data = ? WHERE id = ?").run(order.version, JSON.stringify(order), id);
+    db().prepare("INSERT INTO driver_access VALUES (?, ?, ?) ON CONFLICT(order_id) DO UPDATE SET token_hash = excluded.token_hash, created_at = excluded.created_at").run(id, hash(token), order.updatedAt);
+    return { order, token };
+  });
+}
+
+export function driverOrder(token: string) {
+  if (!/^[a-f0-9]{64}$/.test(token)) throw new OrderError("This driver link is invalid.", 404);
+  const row = db().prepare("SELECT o.data FROM driver_access d JOIN orders o ON o.id = d.order_id WHERE d.token_hash = ?").get(hash(token));
+  if (!row) throw new OrderError("This driver link has expired or been replaced.", 404);
+  return JSON.parse(String(row.data)) as Order;
+}
+
+export function updateDriverOrder(token: string, value: unknown) {
+  if (!value || typeof value !== "object") throw new OrderError("Invalid driver update.");
+  const raw = value as { action?: unknown; recipientName?: unknown; note?: unknown };
+  return transaction(() => {
+    const access = db().prepare("SELECT order_id FROM driver_access WHERE token_hash = ?").get(hash(token));
+    if (!access) throw new OrderError("This driver link has expired or been replaced.", 404);
+    const row = db().prepare("SELECT data FROM orders WHERE id = ?").get(String(access.order_id));
+    if (!row) throw new OrderError("Order not found.", 404);
+    const order = JSON.parse(String(row.data)) as Order;
+    if (!order.handover || order.status === "cancelled") throw new OrderError("This handover is no longer active.", 409);
+    const transitions: Record<HandoverState, HandoverState | null> = { assigned: "collected", collected: "on-the-way", "on-the-way": "delivered", delivered: null };
+    const expected = transitions[order.handover.state];
+    if (raw.action !== expected) throw new OrderError("That handover step is not available.", 409);
+    if (raw.action === "collected" && order.status !== "ready") throw new OrderError("The order must be marked ready before collection.", 409);
+    if (raw.action === "delivered" && (typeof raw.recipientName !== "string" || raw.recipientName.trim().length < 2 || raw.recipientName.trim().length > 80)) throw new OrderError("Enter the name of the person who received the order.");
+    if (raw.note !== undefined && (typeof raw.note !== "string" || raw.note.trim().length > 180)) throw new OrderError("Handover note must be at most 180 characters.");
+    const now = new Date().toISOString();
+    order.handover.state = raw.action as HandoverState; order.handover.updatedAt = now;
+    if (raw.action === "delivered") { order.handover.recipientName = (raw.recipientName as string).trim(); order.handover.note = typeof raw.note === "string" ? raw.note.trim() : ""; order.status = "completed"; }
+    else if (raw.action === "on-the-way") order.status = "dispatched";
+    const labels: Record<HandoverState, string> = { assigned: "Driver assigned", collected: "Driver collected order", "on-the-way": "On the way", delivered: `Delivered to ${order.handover.recipientName}` };
+    order.version += 1; order.updatedAt = now; order.history.push({ at: now, label: labels[order.handover.state] });
+    order.customerUpdates = [...(order.customerUpdates || []), { at: now, message: order.handover.state === "collected" ? "Your order has been collected for delivery." : order.handover.state === "on-the-way" ? "Your order is on the way." : `Your order was delivered to ${order.handover.recipientName}.` }];
+    db().prepare("UPDATE orders SET version = ?, data = ? WHERE id = ?").run(order.version, JSON.stringify(order), order.id);
     return order;
   });
 }

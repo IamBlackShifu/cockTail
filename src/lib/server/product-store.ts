@@ -1,9 +1,10 @@
 import { cocktails, productTones, type Cocktail, type ManagedProduct } from "../catalog";
 import { OrderError } from "../orders";
 import { db, transaction } from "./database";
+import { listIngredients } from "./ingredient-store";
 
 type ProductRow = {
-  id: number; name: string; note: string; price_cents: number; category: string;
+  id: number; name: string; note: string; description: string; price_cents: number; category: string;
   image: string; strength: string; tone: string; active: number; version: number;
   featured: number; display_order: number; available: number;
   created_at: string; updated_at: string;
@@ -11,11 +12,24 @@ type ProductRow = {
 
 function fromRow(row: ProductRow): ManagedProduct {
   return {
-    id: Number(row.id), name: row.name, note: row.note, price: Number(row.price_cents) / 100,
+    id: Number(row.id), name: row.name, note: row.note, description: row.description, price: Number(row.price_cents) / 100,
     priceCents: Number(row.price_cents), category: row.category, image: row.image,
-    strength: row.strength, tone: row.tone, active: Boolean(row.active), available: Boolean(row.available), featured: Boolean(row.featured), displayOrder: Number(row.display_order), version: Number(row.version),
+    strength: row.strength, tone: row.tone, active: Boolean(row.active), available: Boolean(row.available), manualAvailable: Boolean(row.available), inventoryAvailable: true, unavailableIngredients: [], featured: Boolean(row.featured), displayOrder: Number(row.display_order), version: Number(row.version),
     createdAt: row.created_at, updatedAt: row.updated_at,
   };
+}
+
+function withInventory(product: ManagedProduct): ManagedProduct {
+  const recipe = product.note.toLowerCase();
+  const required = listIngredients(true).filter(ingredient => {
+    const label = ingredient.label.toLowerCase();
+    if (label === "rum") return /\brum\b/.test(recipe);
+    if (label === "lime & mint") return recipe.includes("lime & mint");
+    return recipe.includes(label);
+  });
+  const unavailableIngredients = required.filter(ingredient => !ingredient.active || !ingredient.available).map(ingredient => ingredient.label);
+  const inventoryAvailable = unavailableIngredients.length === 0;
+  return { ...product, inventoryAvailable, unavailableIngredients, available: product.manualAvailable && inventoryAvailable };
 }
 
 function seedProducts() {
@@ -24,11 +38,41 @@ function seedProducts() {
     if (count) return;
     const now = new Date().toISOString();
     const insert = db().prepare(`INSERT INTO products
-      (id, name, note, price_cents, category, image, strength, tone, active, available, featured, display_order, version, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, ?, 1, ?, ?)`);
+      (id, name, note, description, price_cents, category, image, strength, tone, active, available, featured, display_order, version, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, ?, 1, ?, ?)`);
     for (const [index, product] of cocktails.entries()) {
-      insert.run(product.id, product.name, product.note, Math.round(product.price * 100), product.category, product.image, product.strength, product.tone, index, now, now);
+      insert.run(product.id, product.name, product.note, product.description, Math.round(product.price * 100), product.category, product.image, product.strength, product.tone, index, now, now);
     }
+  });
+}
+
+function migrateSignatureMenu() {
+  if (db().prepare("SELECT 1 FROM community_settings WHERE key = 'signature-menu-v1'").get()) return;
+  transaction(() => {
+    const now = new Date().toISOString();
+    db().prepare("UPDATE products SET active = 0, featured = 0, version = version + 1, updated_at = ? WHERE active = 1").run(now);
+    const find = db().prepare("SELECT id FROM products WHERE name = ? COLLATE NOCASE ORDER BY id LIMIT 1");
+    const update = db().prepare(`UPDATE products SET note = ?, description = ?, price_cents = ?, category = ?, image = ?, strength = ?, tone = ?, active = 1, available = 1, featured = ?, display_order = ?, version = version + 1, updated_at = ? WHERE id = ?`);
+    const insert = db().prepare(`INSERT INTO products (name, note, description, price_cents, category, image, strength, tone, active, available, featured, display_order, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?, ?)`);
+    cocktails.forEach((product, index) => {
+      const existing = find.get(product.name);
+      const values = [product.note, product.description, Math.round(product.price * 100), "Signature", product.image, product.strength, product.tone, ["Midnight Mischief", "The Forbidden Kiss", "Velvet Voodoo"].includes(product.name) ? 1 : 0, index, now];
+      if (existing) update.run(...values, Number(existing.id));
+      else insert.run(product.name, ...values, now);
+    });
+    db().prepare("DELETE FROM product_categories").run();
+    db().prepare("INSERT INTO product_categories VALUES ('Signature', 0, ?)").run(now);
+    db().prepare("INSERT INTO community_settings VALUES ('signature-menu-v1', ?, ?)").run(JSON.stringify({ names: cocktails.map(product => product.name) }), now);
+  });
+}
+
+function migrateSignatureImages() {
+  if (db().prepare("SELECT 1 FROM community_settings WHERE key = 'signature-images-v1'").get()) return;
+  transaction(() => {
+    const now = new Date().toISOString();
+    const update = db().prepare("UPDATE products SET image = ?, version = version + 1, updated_at = ? WHERE name = ? COLLATE NOCASE");
+    cocktails.forEach(product => update.run(product.image, now, product.name));
+    db().prepare("INSERT INTO community_settings VALUES ('signature-images-v1', ?, ?)").run(JSON.stringify({ names: cocktails.map(product => product.name) }), now);
   });
 }
 
@@ -44,6 +88,7 @@ function validateProduct(value: unknown) {
   const input = value as Record<string, unknown>;
   const name = cleanText(input.name, "Product name", 2, 80);
   const note = cleanText(input.note, "Description", 2, 180);
+  const description = cleanText(input.description, "Taste description", 2, 240);
   const category = cleanText(input.category, "Category", 2, 40);
   const strength = cleanText(input.strength, "Strength label", 2, 30);
   const image = cleanText(input.image, "Image URL", 8, 500);
@@ -53,7 +98,7 @@ function validateProduct(value: unknown) {
   if (typeof input.tone !== "string" || !(productTones as readonly string[]).includes(input.tone)) throw new OrderError("Choose a valid colour tone.");
   const priceCents = Number(input.priceCents);
   if (!Number.isInteger(priceCents) || priceCents < 50 || priceCents > 1_000_000) throw new OrderError("Price must be between $0.50 and $10,000.00.");
-  return { name, note, category, strength, image: parsedImage.toString(), tone: input.tone, priceCents, featured: input.featured === true };
+  return { name, note, description, category, strength, image: parsedImage.toString(), tone: input.tone, priceCents, featured: input.featured === true };
 }
 
 function syncCategories() {
@@ -65,19 +110,19 @@ function syncCategories() {
 }
 
 export function categoryOrder() {
-  seedProducts(); syncCategories();
+  seedProducts(); migrateSignatureMenu(); migrateSignatureImages(); syncCategories();
   return (db().prepare("SELECT name FROM product_categories ORDER BY display_order, name COLLATE NOCASE").all() as { name: string }[]).map(entry => entry.name);
 }
 
 export function listProducts(includeInactive = false) {
-  seedProducts();
+  seedProducts(); migrateSignatureMenu(); migrateSignatureImages();
   syncCategories();
   const rows = db().prepare(`SELECT products.* FROM products LEFT JOIN product_categories ON product_categories.name = products.category ${includeInactive ? "" : "WHERE active = 1"} ORDER BY active DESC, featured DESC, COALESCE(product_categories.display_order, 999999), products.display_order, products.name COLLATE NOCASE`).all() as unknown as ProductRow[];
-  return rows.map(fromRow);
+  return rows.map(row => withInventory(fromRow(row)));
 }
 
 export function activeCocktails(): Cocktail[] {
-  return listProducts(false).filter(product => product.available).map(({ id, name, note, price, category, image, strength, tone, featured, displayOrder }) => ({ id, name, note, price, category, image, strength, tone, featured, displayOrder }));
+  return listProducts(false).filter(product => product.available).map(({ id, name, note, description, price, category, image, strength, tone, featured, displayOrder }) => ({ id, name, note, description, price, category, image, strength, tone, featured, displayOrder }));
 }
 
 export function createProduct(value: unknown) {
@@ -89,11 +134,11 @@ export function createProduct(value: unknown) {
     const now = new Date().toISOString();
     const displayOrder = Number(db().prepare("SELECT COALESCE(MAX(display_order), -1) + 1 AS value FROM products").get()?.value || 0);
     const result = db().prepare(`INSERT INTO products
-      (name, note, price_cents, category, image, strength, tone, active, available, featured, display_order, version, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?, ?)`).run(product.name, product.note, product.priceCents, product.category, product.image, product.strength, product.tone, product.featured ? 1 : 0, displayOrder, now, now);
+      (name, note, description, price_cents, category, image, strength, tone, active, available, featured, display_order, version, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?, ?)`).run(product.name, product.note, product.description, product.priceCents, product.category, product.image, product.strength, product.tone, product.featured ? 1 : 0, displayOrder, now, now);
     syncCategories();
     const row = db().prepare("SELECT * FROM products WHERE id = ?").get(Number(result.lastInsertRowid)) as unknown as ProductRow;
-    return fromRow(row);
+    return withInventory(fromRow(row));
   });
 }
 
@@ -109,10 +154,10 @@ export function updateProduct(id: number, value: unknown) {
     const duplicate = db().prepare("SELECT 1 FROM products WHERE id != ? AND name = ? COLLATE NOCASE AND active = 1").get(id, product.name);
     if (duplicate) throw new OrderError("An active product already uses that name.", 409);
     const now = new Date().toISOString();
-    db().prepare(`UPDATE products SET name = ?, note = ?, price_cents = ?, category = ?, image = ?, strength = ?, tone = ?, featured = ?,
-      version = version + 1, updated_at = ? WHERE id = ?`).run(product.name, product.note, product.priceCents, product.category, product.image, product.strength, product.tone, product.featured ? 1 : 0, now, id);
+    db().prepare(`UPDATE products SET name = ?, note = ?, description = ?, price_cents = ?, category = ?, image = ?, strength = ?, tone = ?, featured = ?,
+      version = version + 1, updated_at = ? WHERE id = ?`).run(product.name, product.note, product.description, product.priceCents, product.category, product.image, product.strength, product.tone, product.featured ? 1 : 0, now, id);
     syncCategories();
-    return fromRow(db().prepare("SELECT * FROM products WHERE id = ?").get(id) as unknown as ProductRow);
+    return withInventory(fromRow(db().prepare("SELECT * FROM products WHERE id = ?").get(id) as unknown as ProductRow));
   });
 }
 
@@ -144,12 +189,12 @@ export function setProductActive(id: number, version: number, active: boolean) {
     const current = db().prepare("SELECT * FROM products WHERE id = ?").get(id) as unknown as ProductRow | undefined;
     if (!current) throw new OrderError("Product not found.", 404);
     if (current.version !== version) throw new OrderError("Another staff member changed this product. Refresh and try again.", 409);
-    if (Boolean(current.active) === active) return fromRow(current);
+    if (Boolean(current.active) === active) return withInventory(fromRow(current));
     if (active && db().prepare("SELECT 1 FROM products WHERE id != ? AND name = ? COLLATE NOCASE AND active = 1").get(id, current.name)) {
       throw new OrderError("Rename this product before restoring it; an active product has the same name.", 409);
     }
     db().prepare("UPDATE products SET active = ?, version = version + 1, updated_at = ? WHERE id = ?").run(active ? 1 : 0, new Date().toISOString(), id);
-    return fromRow(db().prepare("SELECT * FROM products WHERE id = ?").get(id) as unknown as ProductRow);
+    return withInventory(fromRow(db().prepare("SELECT * FROM products WHERE id = ?").get(id) as unknown as ProductRow));
   });
 }
 
@@ -160,8 +205,8 @@ export function setProductAvailable(id: number, version: number, available: bool
     const current = db().prepare("SELECT * FROM products WHERE id = ?").get(id) as unknown as ProductRow | undefined;
     if (!current || !current.active) throw new OrderError("Product not found.", 404);
     if (current.version !== version) throw new OrderError("Another staff member changed this product. Refresh and try again.", 409);
-    if (Boolean(current.available) === available) return fromRow(current);
+    if (Boolean(current.available) === available) return withInventory(fromRow(current));
     db().prepare("UPDATE products SET available = ?, version = version + 1, updated_at = ? WHERE id = ?").run(available ? 1 : 0, new Date().toISOString(), id);
-    return fromRow(db().prepare("SELECT * FROM products WHERE id = ?").get(id) as unknown as ProductRow);
+    return withInventory(fromRow(db().prepare("SELECT * FROM products WHERE id = ?").get(id) as unknown as ProductRow));
   });
 }

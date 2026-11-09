@@ -141,6 +141,47 @@ test("real orders: authorization, prices, retries, transitions and persistence",
       const tracked = await request(`/api/orders/${order.id}`, { headers: { Authorization: `Bearer ${token}` } });
       assert.equal((await tracked.json()).order.customerUpdates[0].message, "Driver is five minutes away.");
     });
+    await t.test("staff assign delivery and a rotated driver link completes handover", async () => {
+      const deliveryToken = randomBytes(32).toString("hex");
+      const created = await request("/api/orders", { method: "POST", body: input, headers: { "Idempotency-Key": randomUUID(), "X-Order-Token": deliveryToken, "X-Real-IP": "127.0.0.2" } });
+      assert.equal(created.status, 201);
+      let delivery = (await created.json()).order;
+      const unassigned = await request("/api/ops/orders?view=unassigned", { auth: true });
+      assert.equal(unassigned.status, 200);
+      assert.ok((await unassigned.json()).orders.some(entry => entry.id === delivery.id));
+      const path = `/api/ops/orders/${delivery.id}`;
+      assert.equal((await request(path, { method: "PATCH", body: { action: "assign-handover", version: delivery.version, assigneeName: "Tari Driver", assigneePhone: "+263771111111" } })).status, 401);
+      const assigned = await request(path, { method: "PATCH", auth: true, body: { action: "assign-handover", version: delivery.version, assigneeName: "Tari Driver", assigneePhone: "+263771111111", etaMinutes: 30 } });
+      assert.equal(assigned.status, 200);
+      let assignment = await assigned.json(); delivery = assignment.order;
+      const oldToken = assignment.driverToken;
+      assert.match(oldToken, /^[a-f0-9]{64}$/);
+      assert.equal((await request(`/api/driver/${oldToken}`)).status, 200);
+      const rotated = await request(path, { method: "PATCH", auth: true, body: { action: "assign-handover", version: delivery.version, assigneeName: "Tari Driver", assigneePhone: "+263771111111", etaMinutes: 25 } });
+      assignment = await rotated.json(); delivery = assignment.order;
+      assert.equal((await request(`/api/driver/${oldToken}`)).status, 404);
+      const driverPath = `/api/driver/${assignment.driverToken}`;
+      assert.equal((await request(driverPath, { method: "PATCH", body: { action: "collected" } })).status, 409);
+      for (const action of ["preparing", "ready"]) {
+        const prepared = await request(path, { method: "PATCH", auth: true, body: { action, version: delivery.version } });
+        assert.equal(prepared.status, 200);
+        delivery = (await prepared.json()).order;
+      }
+      for (const action of ["collected", "on-the-way"]) {
+        const advanced = await request(driverPath, { method: "PATCH", body: { action } });
+        assert.equal(advanced.status, 200);
+        delivery = (await advanced.json()).order;
+      }
+      assert.equal(delivery.status, "dispatched");
+      assert.equal((await request(driverPath, { method: "PATCH", body: { action: "delivered", recipientName: "x" } })).status, 400);
+      const delivered = await request(driverPath, { method: "PATCH", body: { action: "delivered", recipientName: "Rudo Customer", note: "Handed over at reception." } });
+      assert.equal(delivered.status, 200);
+      delivery = (await delivered.json()).order;
+      assert.equal(delivery.status, "completed");
+      assert.equal(delivery.handover.recipientName, "Rudo Customer");
+      const customerView = await request(`/api/orders/${delivery.id}`, { headers: { Authorization: `Bearer ${deliveryToken}` } });
+      assert.equal((await customerView.json()).order.handover.state, "delivered");
+    });
     await t.test("pickup custom creations have correct options, prices and handover", async () => {
       const response = await request("/api/orders", { method: "POST", body: { ...input, fulfillment: "Pickup", address: "", items: [{ cocktailId: -1, quantity: 2, creationName: "Harare Sunset", creatorKey: customCreatorKey, choices: { spirit: "Gin", mixer: "Passionfruit", finish: "Berry crown" } }] }, headers: { ...submitHeaders, "Idempotency-Key": randomUUID() } });
       assert.equal(response.status, 201);
@@ -221,6 +262,9 @@ test("real orders: authorization, prices, retries, transitions and persistence",
       const gin = (await ingredientsResponse.json()).ingredients.find(item => item.label === "Gin");
       const soldOut = await request(`/api/ops/ingredients/${gin.id}`, { method: "PUT", auth: true, body: { version: gin.version, available: false } });
       assert.equal(soldOut.status, 200);
+      const inventoryMenu = await (await request("/api/products")).json();
+      assert.equal(inventoryMenu.products.find(item => item.name === "The Forbidden Kiss").available, false);
+      assert.deepEqual(inventoryMenu.products.find(item => item.name === "The Forbidden Kiss").unavailableIngredients, ["Gin"]);
       const unavailableCommunity = await request("/api/community");
       assert.equal((await unavailableCommunity.json()).creations[0].available, false);
       const unavailableOrder = await request("/api/orders", { method: "POST", body: { ...input, fulfillment: "Pickup", address: "", items: [{ cocktailId: -1, quantity: 1, creationName: "Harare Sunset", creatorKey: friendKey, sourceCreationId: shared.id, choices: shared.choices }] }, headers: { "Idempotency-Key": randomUUID(), "X-Order-Token": randomBytes(32).toString("hex") } });
@@ -228,6 +272,7 @@ test("real orders: authorization, prices, retries, transitions and persistence",
       const soldIngredient = (await soldOut.json()).ingredient;
       const restored = await request(`/api/ops/ingredients/${gin.id}`, { method: "PUT", auth: true, body: { version: soldIngredient.version, available: true } });
       assert.equal(restored.status, 200);
+      assert.equal((await (await request("/api/products")).json()).products.find(item => item.name === "The Forbidden Kiss").available, true);
       assert.equal((await (await request("/api/community")).json()).creations[0].available, true);
       const likeResponse = await request(`/api/community/${shared.id}/like`, { method: "POST", headers: { "X-Creator-Key": friendKey } });
       assert.equal(likeResponse.status, 200);
@@ -252,9 +297,9 @@ test("real orders: authorization, prices, retries, transitions and persistence",
     await t.test("staff manage live products while historical order prices remain unchanged", async () => {
       const publicBefore = await request("/api/products");
       assert.equal(publicBefore.status, 200);
-      assert.equal((await publicBefore.json()).products.length, 6);
+      assert.equal((await publicBefore.json()).products.length, 9);
       assert.equal((await request("/api/ops/products")).status, 401);
-      const draft = { name: "Test Citrus Cloud", note: "Orange · vanilla · soda", priceCents: 1725, category: "Mocktails", image: "https://images.unsplash.com/photo-1556679343-c7306c1976bc?auto=format&fit=crop&w=900&q=85", strength: "Zero proof", tone: "lime", featured: true };
+      const draft = { name: "Test Citrus Cloud", note: "Orange · vanilla · soda", description: "Bright, creamy and alcohol-free.", priceCents: 1725, category: "Mocktails", image: "https://images.unsplash.com/photo-1556679343-c7306c1976bc?auto=format&fit=crop&w=900&q=85", strength: "Zero proof", tone: "lime", featured: true };
       const createdResponse = await request("/api/ops/products", { method: "POST", auth: true, body: draft });
       assert.equal(createdResponse.status, 201);
       let product = (await createdResponse.json()).product;
@@ -367,6 +412,14 @@ test("real orders: authorization, prices, retries, transitions and persistence",
         staff.on("pageerror", error => browserErrors.push(error.message));
         await customer.goto(base);
         await expect(customer.locator("#community").getByRole("heading", { name: "Harare Sunset" })).toBeVisible();
+        const firstFavourite = customer.locator(".cocktail-card").first();
+        const firstFavouriteName = (await firstFavourite.getByRole("heading").innerText()).trim();
+        await firstFavourite.getByRole("button", { name: /Add .* to favourites/ }).click();
+        await customer.getByRole("button", { name: /Favourites 1/ }).click();
+        await expect(customer.locator(".cocktail-card").getByRole("heading", { name: firstFavouriteName })).toBeVisible();
+        await customer.reload();
+        await customer.getByRole("button", { name: /Favourites 1/ }).click();
+        await expect(customer.locator(".cocktail-card").getByRole("heading", { name: firstFavouriteName })).toBeVisible();
         await customer.getByRole("button", { name: /Build your own/ }).click();
         await customer.getByRole("button", { name: /Next step/ }).click();
         await customer.getByRole("button", { name: /Next step/ }).click();
@@ -418,7 +471,8 @@ test("real orders: authorization, prices, retries, transitions and persistence",
         await expect(staff.getByRole("heading", { name: "Harare Sunset" })).toBeVisible();
         await staff.getByRole("button", { name: "Products & prices" }).click();
         await staff.getByLabel("Product name").fill("Browser Berry Fizz");
-        await staff.getByLabel("Description").fill("Berry · lime · soda");
+        await staff.getByLabel("Ingredients").fill("Berry · lime · soda");
+        await staff.getByLabel("Taste description").fill("Bright, bubbly and alcohol-free.");
         await staff.getByLabel("Price (USD)").fill("12.75");
         await staff.getByLabel("Category").fill("Mocktails");
         await staff.getByLabel("Strength label").fill("Zero proof");

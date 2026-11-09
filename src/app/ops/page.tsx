@@ -30,6 +30,7 @@ export default function OperationsPage() {
   const [busy, setBusy] = useState(false);
   const [updated, setUpdated] = useState("");
   const [online, setOnline] = useState(false);
+  const [driverLink, setDriverLink] = useState<{ orderId: string; url: string } | null>(null);
   const requestId = useRef(0);
   const selected = orders.find((order) => order.id === selectedId);
   const load = useCallback(async () => {
@@ -114,8 +115,19 @@ export default function OperationsPage() {
     } catch (failure) { setError(failure instanceof Error ? failure.message : "The customer update could not be saved."); await load(); }
     finally { setBusy(false); }
   }
+  async function assignHandover(event: FormEvent<HTMLFormElement>, order: Order) {
+    event.preventDefault(); const form = new FormData(event.currentTarget); const eta = String(form.get("eta") || "").trim();
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const response = await fetch(`/api/ops/orders/${order.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "assign-handover", version: order.version, assigneeName: String(form.get("assigneeName") || ""), assigneePhone: String(form.get("assigneePhone") || ""), ...(eta ? { etaMinutes: Number(eta) } : {}) }), signal: AbortSignal.timeout(15000) });
+      const result = await response.json(); if (!response.ok) throw new Error(result.error || "Assignment failed.");
+      ++requestId.current; setOrders(current => current.map(entry => entry.id === order.id ? result.order : entry));
+      setDriverLink({ orderId: order.id, url: `${window.location.origin}/driver/${result.driverToken}` }); setNotice(`${order.number} assigned. Share the new private driver link now.`);
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "The handover could not be assigned."); await load(); }
+    finally { setBusy(false); }
+  }
   const visible = useMemo(() => orders.filter(order => {
-    const inQueue = queue === "All" || (queue === "Active" ? !["completed", "cancelled"].includes(order.status) : order.status === queue);
+    const inQueue = queue === "All" || queue === "Unassigned" || queue === "Delayed" || (queue === "Active" ? !["completed", "cancelled"].includes(order.status) : order.status === queue);
     return inQueue && `${order.number} ${order.customer.name} ${order.customer.phone}`.toLowerCase().includes(search.toLowerCase());
   }), [orders, queue, search]);
   if (auth !== "signed-in") return <main className="ops-login-shell"><form className="ops-login" onSubmit={signIn}>
@@ -133,7 +145,7 @@ export default function OperationsPage() {
       <div className="metric-grid"><article><p>Received</p><strong>{summary.counts.new || 0}</strong><small>Waiting for the team</small></article><article><p>Preparing</p><strong>{summary.counts.preparing || 0}</strong><small>At the bar</small></article><article><p>Ready / on the way</p><strong>{(summary.counts.ready || 0) + (summary.counts.dispatched || 0)}</strong><small>Handover and delivery</small></article><article className="accent-metric"><p>Awaiting payment</p><strong>{money(summary.unpaidCents)}</strong><small>Across all saved orders</small></article></div>
       {error && <p className="ops-error" role="alert">{error}</p>}{notice && <p className="ops-notice" role="status">{notice}</p>}
       <section className="queue-panel"><div className="panel-heading"><div><p className="ops-kicker">Customer orders</p><h2>Orders in motion</h2></div><input className="order-search" aria-label="Search orders on this page" placeholder="Order, customer or phone" value={search} onChange={event => setSearch(event.target.value)} /></div>
-        <div className="queue-tabs">{["Active", "All", ...statuses].map(status => <button key={status} className={queue === status ? "active" : ""} onClick={() => { setQueue(status); setPage(0); }}>{status in statusLabels ? statusLabels[status as keyof typeof statusLabels] : status}</button>)}</div>
+        <div className="queue-tabs">{["Active", "Unassigned", "Delayed", "All", ...statuses].map(status => <button key={status} className={queue === status ? "active" : ""} onClick={() => { setQueue(status); setPage(0); }}>{status in statusLabels ? statusLabels[status as keyof typeof statusLabels] : status}</button>)}</div>
         <p className="page-context">Page {page + 1} · {orders.length} orders in this view. Search applies to this page.</p>
         <div className="live-order-list">{visible.map(order => <button key={order.id} className="live-order-row" onClick={() => setSelectedId(order.id)}>
           <div><span className={`order-status-pill ${order.status}`}>{statusLabels[order.status]}</span><strong>{order.number}</strong><small>{new Date(order.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small></div>
@@ -151,6 +163,8 @@ export default function OperationsPage() {
       <ul className="detail-items">{selected.items.map((item, index) => <li key={index}><div><strong>{item.quantity} × {item.name}</strong><p>{item.customization}</p></div><b>{money(item.unitCents * item.quantity)}</b></li>)}</ul>
       <dl className="detail-totals"><div><dt>Drinks</dt><dd>{money(selected.subtotalCents)}</dd></div><div><dt>{selected.fulfillment}</dt><dd>{money(selected.deliveryCents)}</dd></div><div><dt>Service fee</dt><dd>{money(selected.serviceCents)}</dd></div><div><dt>Total</dt><dd>{money(selected.totalCents)}</dd></div></dl>
       <div className="detail-payment"><strong>{selected.payment === "paid" ? "Payment collected" : `Payment due on ${selected.fulfillment.toLowerCase()}`}</strong>{selected.payment === "unpaid" && selected.status !== "cancelled" && <button className="outline-ops-button" disabled={busy} onClick={() => update(selected, "mark-paid")}>Mark payment collected</button>}</div>
+      {selected.fulfillment === "Delivery" && !["completed", "cancelled"].includes(selected.status) && <form className="handover-assignment" onSubmit={event => void assignHandover(event, selected)}><div><p className="ops-kicker">Delivery handover</p><h3>{selected.handover ? `Assigned to ${selected.handover.assigneeName}` : "Assign a driver"}</h3>{selected.handover && <p>{selected.handover.state.replaceAll("-", " ")}{selected.handover.estimatedAt ? ` · ETA ${new Date(selected.handover.estimatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</p>}</div><label>Name<input name="assigneeName" required minLength={2} maxLength={80} defaultValue={selected.handover?.assigneeName || ""} /></label><label>Phone<input name="assigneePhone" required minLength={7} maxLength={24} defaultValue={selected.handover?.assigneePhone || ""} /></label><label>ETA minutes <span>Optional</span><input name="eta" type="number" min={1} max={240} placeholder="30" /></label><button className="ops-primary" disabled={busy}>{busy ? "Assigning…" : selected.handover ? "Reassign & rotate link" : "Assign & create driver link"}</button></form>}
+      {driverLink?.orderId === selected.id && <div className="driver-link-panel"><strong>Private driver link</strong><p>This link is shown only now. Reassigning rotates and invalidates the old link.</p><div><button onClick={() => void navigator.clipboard.writeText(driverLink.url)}>Copy link</button><a href={driverLink.url} target="_blank" rel="noreferrer">Open driver view</a></div></div>}
       <form className="customer-update-form" onSubmit={event => void sendCustomerUpdate(event, selected)}><div><p className="ops-kicker">Customer communication</p><h3>Publish a tracking update</h3></div><label>Message<textarea name="message" required minLength={2} maxLength={180} placeholder="e.g. Your drinks are packed; the driver leaves in 5 minutes." /></label><label>ETA in minutes <span>Optional</span><input name="eta" type="number" min={1} max={240} placeholder="30" /></label><button className="ops-primary" disabled={busy}>{busy ? "Publishing…" : "Publish update"}</button></form>
       {selected.customerUpdates?.length ? <div className="customer-update-log"><h3>Customer updates</h3>{selected.customerUpdates.toReversed().map((entry, index) => <article key={`${entry.at}-${index}`}><strong>{entry.message}</strong><small>{new Date(entry.at).toLocaleString()}{entry.estimatedAt ? ` · ETA ${new Date(entry.estimatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</small></article>)}</div> : null}
       <div className="detail-actions">{nextStatus(selected) && <button className="ops-primary" disabled={busy} onClick={() => update(selected, nextStatus(selected)!)}>{busy ? "Updating…" : actionLabels[nextStatus(selected) as keyof typeof actionLabels]}</button>}{["new", "preparing", "ready"].includes(selected.status) && <button className="cancel-order" disabled={busy} onClick={() => update(selected, "cancelled")}>Cancel order</button>}</div>

@@ -9,12 +9,15 @@ export const statusLabels: Record<OrderStatus, string> = {
   new: "Received", preparing: "Preparing", ready: "Ready", dispatched: "On the way", completed: "Completed", cancelled: "Cancelled",
 };
 export type Totals = { subtotalCents: number; discountCents: number; deliveryCents: number; serviceCents: number; totalCents: number };
+export type HandoverState = "assigned" | "collected" | "on-the-way" | "delivered";
+export type Handover = { assigneeName: string; assigneePhone: string; state: HandoverState; assignedAt: string; updatedAt: string; estimatedAt?: string; recipientName?: string; note?: string };
 export type Order = Totals & {
   id: string; number: string; createdAt: string; updatedAt: string; version: number;
   customer: { name: string; phone: string }; fulfillment: Fulfillment; address: string; instructions: string;
   items: OrderItem[]; status: OrderStatus; payment: "unpaid" | "paid";
   history: { at: string; label: string }[];
   customerUpdates?: { at: string; message: string; estimatedAt?: string }[];
+  handover?: Handover;
 };
 export type Receipt = { id: string; token: string };
 export type CreationStatus = "private" | "submitted" | "published" | "rejected" | "hidden";

@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 import { money } from "@/lib/orders";
 import { productTones, type ManagedProduct } from "@/lib/catalog";
 
-type ProductDraft = { name: string; note: string; price: string; category: string; image: string; strength: string; tone: string; featured: boolean };
-const emptyDraft: ProductDraft = { name: "", note: "", price: "", category: "Signature", image: "", strength: "Medium", tone: "sunset", featured: false };
+type ProductDraft = { name: string; note: string; description: string; price: string; category: string; image: string; strength: string; tone: string; featured: boolean };
+const emptyDraft: ProductDraft = { name: "", note: "", description: "", price: "", category: "Signature", image: "", strength: "Medium", tone: "sunset", featured: false };
 
 export function ProductManager() {
   const [products, setProducts] = useState<ManagedProduct[]>([]);
@@ -35,10 +35,10 @@ export function ProductManager() {
   }, []);
   useEffect(() => { const timer = setTimeout(() => { void load(); }, 0); return () => clearTimeout(timer); }, [load]);
 
-  const visible = useMemo(() => products.filter(product => (showInactive || product.active) && `${product.name} ${product.category} ${product.note}`.toLowerCase().includes(query.toLowerCase())), [products, query, showInactive]);
+  const visible = useMemo(() => products.filter(product => (showInactive || product.active) && `${product.name} ${product.category} ${product.note} ${product.description}`.toLowerCase().includes(query.toLowerCase())), [products, query, showInactive]);
   function edit(product: ManagedProduct) {
     setEditing(product);
-    setDraft({ name: product.name, note: product.note, price: (product.priceCents / 100).toFixed(2), category: product.category, image: product.image, strength: product.strength, tone: product.tone, featured: product.featured });
+    setDraft({ name: product.name, note: product.note, description: product.description, price: (product.priceCents / 100).toFixed(2), category: product.category, image: product.image, strength: product.strength, tone: product.tone, featured: product.featured });
     setError(""); setNotice("");
     setTimeout(() => document.getElementById("product-editor")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
@@ -125,16 +125,17 @@ export function ProductManager() {
         <p className="page-context">{products.filter(product => product.active).length} live · {products.filter(product => !product.active).length} removed</p>
         {loading ? <p className="queue-empty">Loading products…</p> : <div className="managed-products">{visible.map(product => <article className={product.active ? "managed-product" : "managed-product inactive"} draggable={product.active && !query} onDragStart={() => setDraggedProduct(product.id)} onDragOver={event => { if (product.active && !query) event.preventDefault(); }} onDrop={() => dropProduct(product.id)} key={product.id}>
           <div className={`managed-product-image ${product.tone}`} style={{ backgroundImage: `url(${product.image})` }} />
-          <div><span className="catalog-state">{product.active ? product.available ? "Available" : "Sold out" : "Removed"}</span>{product.featured && <span className="catalog-featured">Featured</span>}<h3>{product.name}</h3><p>{product.note}</p><small>{product.category} · {product.strength}</small></div>
+          <div><span className="catalog-state">{product.active ? product.available ? "Available" : product.manualAvailable ? "Ingredient sold out" : "Manually sold out" : "Removed"}</span>{product.featured && <span className="catalog-featured">Featured</span>}<h3>{product.name}</h3><p>{product.note}</p><small>{product.description}</small>{product.unavailableIngredients.length > 0 && <small className="inventory-warning">Unavailable: {product.unavailableIngredients.join(", ")}</small>}<small>{product.category} · {product.strength}</small></div>
           <strong>{money(product.priceCents)}</strong>
-          <div className="managed-actions"><button disabled={busy} onClick={() => edit(product)}>Edit</button>{product.active && <button disabled={busy} onClick={() => changeStock(product, !product.available)}>{changingId === product.id ? "Updating…" : product.available ? "Mark sold out" : "Mark available"}</button>}{product.active ? <button className="remove-product" disabled={busy} onClick={() => changeAvailability(product, false)}>{changingId === product.id ? "Removing…" : "Remove"}</button> : <button disabled={busy} onClick={() => changeAvailability(product, true)}>{changingId === product.id ? "Restoring…" : "Restore"}</button>}</div>
+          <div className="managed-actions"><button disabled={busy} onClick={() => edit(product)}>Edit</button>{product.active && <button disabled={busy} onClick={() => changeStock(product, !product.manualAvailable)}>{changingId === product.id ? "Updating…" : product.manualAvailable ? "Mark sold out" : "Mark available"}</button>}{product.active ? <button className="remove-product" disabled={busy} onClick={() => changeAvailability(product, false)}>{changingId === product.id ? "Removing…" : "Remove"}</button> : <button disabled={busy} onClick={() => changeAvailability(product, true)}>{changingId === product.id ? "Restoring…" : "Restore"}</button>}</div>
         </article>)}</div>}
         {!loading && !visible.length && <div className="queue-empty"><h3>No matching products</h3><p>Try another search or include removed products.</p></div>}
       </section>
       <form className="product-editor" id="product-editor" onSubmit={save}>
         <div><p className="ops-kicker">{editing ? "Editing live product" : "New menu item"}</p><h2>{editing ? editing.name : "Add a product"}</h2></div>
         <label>Product name<input required minLength={2} maxLength={80} value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} /></label>
-        <label>Description<textarea required minLength={2} maxLength={180} rows={3} value={draft.note} onChange={event => setDraft(current => ({ ...current, note: event.target.value }))} /></label>
+        <label>Ingredients<textarea required minLength={2} maxLength={180} rows={2} value={draft.note} onChange={event => setDraft(current => ({ ...current, note: event.target.value }))} /></label>
+        <label>Taste description<textarea required minLength={2} maxLength={240} rows={3} value={draft.description} onChange={event => setDraft(current => ({ ...current, description: event.target.value }))} /></label>
         <div className="product-editor-grid"><label>Price (USD)<input required inputMode="decimal" placeholder="13.00" value={draft.price} onChange={event => setDraft(current => ({ ...current, price: event.target.value }))} /></label><label>Category<input required minLength={2} maxLength={40} placeholder="Signature" value={draft.category} onChange={event => setDraft(current => ({ ...current, category: event.target.value }))} /></label></div>
         <div className="product-editor-grid"><label>Strength label<input required minLength={2} maxLength={30} placeholder="Medium" value={draft.strength} onChange={event => setDraft(current => ({ ...current, strength: event.target.value }))} /></label><label>Colour tone<select value={draft.tone} onChange={event => setDraft(current => ({ ...current, tone: event.target.value }))}>{productTones.map(tone => <option key={tone} value={tone}>{tone}</option>)}</select></label></div>
         <label className="featured-control"><input type="checkbox" checked={draft.featured} onChange={event => setDraft(current => ({ ...current, featured: event.target.checked }))} /><span><strong>Feature this product</strong>Promote it ahead of standard products on the customer menu.</span></label>

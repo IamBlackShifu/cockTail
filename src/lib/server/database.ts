@@ -68,11 +68,16 @@ export function db() {
       expires_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
       FOREIGN KEY (creation_id) REFERENCES creations(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS driver_access (
+      order_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL,
+      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+    );
   `);
   const columns = new Set((database.prepare("PRAGMA table_info(products)").all() as { name: string }[]).map(column => column.name));
   if (!columns.has("featured")) database.exec("ALTER TABLE products ADD COLUMN featured INTEGER NOT NULL DEFAULT 0");
   if (!columns.has("display_order")) database.exec("ALTER TABLE products ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0");
   if (!columns.has("available")) database.exec("ALTER TABLE products ADD COLUMN available INTEGER NOT NULL DEFAULT 1");
+  if (!columns.has("description")) database.exec("ALTER TABLE products ADD COLUMN description TEXT NOT NULL DEFAULT ''");
   const creationColumns = new Set((database.prepare("PRAGMA table_info(creations)").all() as { name: string }[]).map(column => column.name));
   if (!creationColumns.has("order_count")) database.exec("ALTER TABLE creations ADD COLUMN order_count INTEGER NOT NULL DEFAULT 1");
   if (!creationColumns.has("share_slug")) database.exec("ALTER TABLE creations ADD COLUMN share_slug TEXT");
