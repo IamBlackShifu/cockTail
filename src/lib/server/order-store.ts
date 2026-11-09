@@ -4,10 +4,12 @@ import { hash } from "./http";
 import { nextStatus, OrderError, statuses, statusLabels, totals, validateOrder, type Order, type OrderStatus } from "../orders";
 import { activeCocktails } from "./product-store";
 import { activeBuilderOptions } from "./ingredient-store";
+import { requireFulfillmentAvailable } from "./store-settings";
 
 type Row = { data: string; request_hash: string; token_hash: string };
 export function createOrder(value: unknown, key: string, token: string) {
   if (!/^[a-f0-9-]{36}$/.test(key) || !/^[a-f0-9]{64}$/.test(token)) throw new OrderError("Please refresh checkout before submitting.");
+  requireFulfillmentAvailable(value && typeof value === "object" ? (value as { fulfillment?: unknown }).fulfillment : undefined);
   const validated = validateOrder(value, activeCocktails(), activeBuilderOptions());
   const rawItems = (value as { items?: unknown[] }).items || [];
   const rawPromoCode = (value as { promoCode?: unknown }).promoCode;
@@ -96,7 +98,15 @@ export function updateOrder(id: string, value: unknown) {
     const order = JSON.parse(String(row.data)) as Order;
     if (order.version !== version) throw new OrderError("Another staff member updated this order. Refresh and try again.", 409);
     let label: string;
-    if (action === "mark-paid") {
+    if (action === "customer-update") {
+      const raw = value as { message?: unknown; etaMinutes?: unknown };
+      if (typeof raw.message !== "string" || raw.message.trim().length < 2 || raw.message.trim().length > 180) throw new OrderError("Customer update must be between 2 and 180 characters.");
+      if (raw.etaMinutes !== undefined && (!Number.isInteger(raw.etaMinutes) || Number(raw.etaMinutes) < 1 || Number(raw.etaMinutes) > 240)) throw new OrderError("ETA must be between 1 and 240 minutes.");
+      const at = new Date();
+      const update = { at: at.toISOString(), message: raw.message.trim(), ...(raw.etaMinutes === undefined ? {} : { estimatedAt: new Date(at.getTime() + Number(raw.etaMinutes) * 60000).toISOString() }) };
+      order.customerUpdates = [...(order.customerUpdates || []), update];
+      label = `Team update: ${update.message}`;
+    } else if (action === "mark-paid") {
       if (order.payment === "paid" || order.status === "cancelled") throw new OrderError("This order cannot be marked paid.", 409);
       order.payment = "paid";
       label = "Payment collected";

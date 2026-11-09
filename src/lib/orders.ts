@@ -14,11 +14,13 @@ export type Order = Totals & {
   customer: { name: string; phone: string }; fulfillment: Fulfillment; address: string; instructions: string;
   items: OrderItem[]; status: OrderStatus; payment: "unpaid" | "paid";
   history: { at: string; label: string }[];
+  customerUpdates?: { at: string; message: string; estimatedAt?: string }[];
 };
 export type Receipt = { id: string; token: string };
 export type CreationStatus = "private" | "submitted" | "published" | "rejected" | "hidden";
 export type SavedCreation = { id: string; name: string; choices: Record<string, string>; unitCents: number; orderCount: number; likeCount: number; weeklyLikes?: number; weeklyOrders?: number; trendingRank?: number; challengeBadge?: string; rewardCode?: string; liked?: boolean; available?: boolean; creatorName?: string; creatorSlug?: string; createdAt: string; shareSlug?: string; moderationStatus: CreationStatus; featured: boolean };
 export type CommunityChallenge = { title: string; description: string; active: boolean; updatedAt: string };
+export type StoreSettings = { acceptingOrders: boolean; deliveryEnabled: boolean; pickupEnabled: boolean; notice: string; whatsappNumber: string; updatedAt: string };
 export type OrderInput = { customer: { name: string; phone: string }; fulfillment: Fulfillment; address: string; instructions: string; promoCode?: string; items: OrderItemInput[] };
 export class OrderError extends Error {
   constructor(message: string, public status = 400) { super(message); }

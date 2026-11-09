@@ -8,15 +8,17 @@ import { ProductManager } from "@/components/product-manager";
 import { CommunityManager } from "@/components/community-manager";
 import { IngredientManager } from "@/components/ingredient-manager";
 import { AnalyticsDashboard } from "@/components/analytics-dashboard";
+import { StoreSettingsManager } from "@/components/store-settings-manager";
 import "./ops.css";
 import "./orders.css";
 
 const actionLabels = { preparing: "Start preparing", ready: "Mark ready", dispatched: "Send for delivery", completed: "Complete order" };
+function whatsappNumber(phone: string) { const digits = phone.replace(/\D/g, ""); return digits.startsWith("0") ? `263${digits.slice(1)}` : digits; }
 export default function OperationsPage() {
   const [auth, setAuth] = useState<"checking" | "signed-out" | "signed-in">("checking");
   const [password, setPassword] = useState("");
   const [orders, setOrders] = useState<Order[]>([]);
-  const [section, setSection] = useState<"orders" | "products" | "ingredients" | "community" | "analytics">("orders");
+  const [section, setSection] = useState<"orders" | "products" | "ingredients" | "community" | "analytics" | "store">("orders");
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [summary, setSummary] = useState<{ counts: Record<string, number>; unpaidCents: number }>({ counts: {}, unpaidCents: 0 });
@@ -97,6 +99,21 @@ export default function OperationsPage() {
       await load();
     } finally { setBusy(false); }
   }
+  async function sendCustomerUpdate(event: FormEvent<HTMLFormElement>, order: Order) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const message = String(form.get("message") || "").trim();
+    const eta = String(form.get("eta") || "").trim();
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const response = await fetch(`/api/ops/orders/${order.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "customer-update", version: order.version, message, ...(eta ? { etaMinutes: Number(eta) } : {}) }), signal: AbortSignal.timeout(15000) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Customer update failed.");
+      ++requestId.current; setOrders(current => current.map(entry => entry.id === order.id ? result.order : entry));
+      event.currentTarget.reset(); setNotice(`${order.number} customer update published.`);
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "The customer update could not be saved."); await load(); }
+    finally { setBusy(false); }
+  }
   const visible = useMemo(() => orders.filter(order => {
     const inQueue = queue === "All" || (queue === "Active" ? !["completed", "cancelled"].includes(order.status) : order.status === queue);
     return inQueue && `${order.number} ${order.customer.name} ${order.customer.phone}`.toLowerCase().includes(search.toLowerCase());
@@ -109,10 +126,10 @@ export default function OperationsPage() {
   </form></main>;
   return <main className="ops-shell real-ops">
     <aside className="ops-sidebar"><Link className="ops-brand ops-logo" href="/"><Image src="/tipsygo-logo-v2.png" alt="TIPSYGO" width={2048} height={768} priority /></Link><div className="location-chip">Order management</div>
-      <nav className="ops-nav" aria-label="Operations views"><button className={section === "orders" && queue === "Active" ? "active" : ""} onClick={() => { setSection("orders"); setQueue("Active"); setPage(0); }}>Orders in motion</button><button className={section === "orders" && queue === "All" ? "active" : ""} onClick={() => { setSection("orders"); setQueue("All"); setPage(0); }}>Order history</button><button className={section === "analytics" ? "active" : ""} onClick={() => setSection("analytics")}>Analytics</button><button className={section === "products" ? "active" : ""} onClick={() => setSection("products")}>Products &amp; prices</button><button className={section === "ingredients" ? "active" : ""} onClick={() => setSection("ingredients")}>Ingredients</button><button className={section === "community" ? "active" : ""} onClick={() => setSection("community")}>Community mixes</button></nav>
+      <nav className="ops-nav" aria-label="Operations views"><button className={section === "orders" && queue === "Active" ? "active" : ""} onClick={() => { setSection("orders"); setQueue("Active"); setPage(0); }}>Orders in motion</button><button className={section === "orders" && queue === "All" ? "active" : ""} onClick={() => { setSection("orders"); setQueue("All"); setPage(0); }}>Order history</button><button className={section === "store" ? "active" : ""} onClick={() => setSection("store")}>Store controls</button><button className={section === "analytics" ? "active" : ""} onClick={() => setSection("analytics")}>Analytics</button><button className={section === "products" ? "active" : ""} onClick={() => setSection("products")}>Products &amp; prices</button><button className={section === "ingredients" ? "active" : ""} onClick={() => setSection("ingredients")}>Ingredients</button><button className={section === "community" ? "active" : ""} onClick={() => setSection("community")}>Community mixes</button></nav>
       <div className="sidebar-footer"><span>Staff session</span><button onClick={signOut} disabled={busy}>Sign out</button></div>
     </aside>
-    <section className="ops-content">{section === "analytics" ? <AnalyticsDashboard /> : section === "products" ? <ProductManager /> : section === "ingredients" ? <IngredientManager /> : section === "community" ? <CommunityManager /> : <><header className="ops-header"><div><p className="ops-kicker">The kitchen queue</p><h1>Every order.<br />One place.</h1></div><div className="ops-header-actions"><span className={online ? "sync-state" : "sync-state stale"}>{online ? `Updated ${updated}` : "Updates interrupted"}</span><button className="outline-ops-button" onClick={() => { setError(""); void load(); }}>Refresh</button></div></header>
+    <section className="ops-content">{section === "store" ? <StoreSettingsManager /> : section === "analytics" ? <AnalyticsDashboard /> : section === "products" ? <ProductManager /> : section === "ingredients" ? <IngredientManager /> : section === "community" ? <CommunityManager /> : <><header className="ops-header"><div><p className="ops-kicker">The kitchen queue</p><h1>Every order.<br />One place.</h1></div><div className="ops-header-actions"><span className={online ? "sync-state" : "sync-state stale"}>{online ? `Updated ${updated}` : "Updates interrupted"}</span><button className="outline-ops-button" onClick={() => { setError(""); void load(); }}>Refresh</button></div></header>
       <div className="metric-grid"><article><p>Received</p><strong>{summary.counts.new || 0}</strong><small>Waiting for the team</small></article><article><p>Preparing</p><strong>{summary.counts.preparing || 0}</strong><small>At the bar</small></article><article><p>Ready / on the way</p><strong>{(summary.counts.ready || 0) + (summary.counts.dispatched || 0)}</strong><small>Handover and delivery</small></article><article className="accent-metric"><p>Awaiting payment</p><strong>{money(summary.unpaidCents)}</strong><small>Across all saved orders</small></article></div>
       {error && <p className="ops-error" role="alert">{error}</p>}{notice && <p className="ops-notice" role="status">{notice}</p>}
       <section className="queue-panel"><div className="panel-heading"><div><p className="ops-kicker">Customer orders</p><h2>Orders in motion</h2></div><input className="order-search" aria-label="Search orders on this page" placeholder="Order, customer or phone" value={search} onChange={event => setSearch(event.target.value)} /></div>
@@ -130,10 +147,12 @@ export default function OperationsPage() {
     {selected && <div className="order-detail-backdrop" role="dialog" aria-modal="true" aria-labelledby="order-detail-title"><section className="live-order-detail">
       <button className="detail-close" aria-label="Close order details" onClick={() => setSelectedId(null)}>×</button><p className="ops-kicker">{selected.fulfillment} · {statusLabels[selected.status]}</p><h2 id="order-detail-title">{selected.number}</h2>
       <p className="detail-time">Placed {new Date(selected.createdAt).toLocaleString()}</p>
-      <div className="detail-customer"><h3>{selected.customer.name}</h3><a href={`tel:${selected.customer.phone.replace(/[^+\d]/g, "")}`}>{selected.customer.phone}</a>{selected.fulfillment === "Delivery" && <p>{selected.address}</p>}{selected.instructions && <p className="detail-notes"><strong>Customer notes</strong>{selected.instructions}</p>}</div>
+      <div className="detail-customer"><h3>{selected.customer.name}</h3><div className="customer-contact-actions"><a href={`tel:${selected.customer.phone.replace(/[^+\d]/g, "")}`}>Call {selected.customer.phone}</a><a href={`https://wa.me/${whatsappNumber(selected.customer.phone)}?text=${encodeURIComponent(`Hi ${selected.customer.name}, this is TipsyGo about your order ${selected.number}.`)}`} target="_blank" rel="noreferrer">Open WhatsApp</a></div>{selected.fulfillment === "Delivery" && <p>{selected.address}</p>}{selected.instructions && <p className="detail-notes"><strong>Customer notes</strong>{selected.instructions}</p>}</div>
       <ul className="detail-items">{selected.items.map((item, index) => <li key={index}><div><strong>{item.quantity} × {item.name}</strong><p>{item.customization}</p></div><b>{money(item.unitCents * item.quantity)}</b></li>)}</ul>
       <dl className="detail-totals"><div><dt>Drinks</dt><dd>{money(selected.subtotalCents)}</dd></div><div><dt>{selected.fulfillment}</dt><dd>{money(selected.deliveryCents)}</dd></div><div><dt>Service fee</dt><dd>{money(selected.serviceCents)}</dd></div><div><dt>Total</dt><dd>{money(selected.totalCents)}</dd></div></dl>
       <div className="detail-payment"><strong>{selected.payment === "paid" ? "Payment collected" : `Payment due on ${selected.fulfillment.toLowerCase()}`}</strong>{selected.payment === "unpaid" && selected.status !== "cancelled" && <button className="outline-ops-button" disabled={busy} onClick={() => update(selected, "mark-paid")}>Mark payment collected</button>}</div>
+      <form className="customer-update-form" onSubmit={event => void sendCustomerUpdate(event, selected)}><div><p className="ops-kicker">Customer communication</p><h3>Publish a tracking update</h3></div><label>Message<textarea name="message" required minLength={2} maxLength={180} placeholder="e.g. Your drinks are packed; the driver leaves in 5 minutes." /></label><label>ETA in minutes <span>Optional</span><input name="eta" type="number" min={1} max={240} placeholder="30" /></label><button className="ops-primary" disabled={busy}>{busy ? "Publishing…" : "Publish update"}</button></form>
+      {selected.customerUpdates?.length ? <div className="customer-update-log"><h3>Customer updates</h3>{selected.customerUpdates.toReversed().map((entry, index) => <article key={`${entry.at}-${index}`}><strong>{entry.message}</strong><small>{new Date(entry.at).toLocaleString()}{entry.estimatedAt ? ` · ETA ${new Date(entry.estimatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</small></article>)}</div> : null}
       <div className="detail-actions">{nextStatus(selected) && <button className="ops-primary" disabled={busy} onClick={() => update(selected, nextStatus(selected)!)}>{busy ? "Updating…" : actionLabels[nextStatus(selected) as keyof typeof actionLabels]}</button>}{["new", "preparing", "ready"].includes(selected.status) && <button className="cancel-order" disabled={busy} onClick={() => update(selected, "cancelled")}>Cancel order</button>}</div>
       {error && <p className="ops-error" role="alert">{error}</p>}
       <h3 className="history-heading">Order history</h3><ol className="detail-history">{selected.history.map((entry, index) => <li key={index}><span>{entry.label}</span><time dateTime={entry.at}>{new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></li>)}</ol>

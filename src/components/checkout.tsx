@@ -1,13 +1,13 @@
 "use client";
 
 import { useRef, useState, type FormEvent } from "react";
-import { money, totals, type Fulfillment, type OrderItemInput } from "@/lib/orders";
+import { money, totals, type Fulfillment, type OrderItemInput, type StoreSettings } from "@/lib/orders";
 import { pendingKey, prepareOrder, receiptKey, sendOrder, type PendingOrder } from "@/lib/client-orders";
 
-export function Checkout({ items, subtotalCents, onClose, onPlaced }: {
-  items: OrderItemInput[]; subtotalCents: number; onClose: () => void; onPlaced: () => void;
+export function Checkout({ items, subtotalCents, settings, onClose, onPlaced }: {
+  items: OrderItemInput[]; subtotalCents: number; settings: StoreSettings; onClose: () => void; onPlaced: () => void;
 }) {
-  const [fulfillment, setFulfillment] = useState<Fulfillment>("Delivery");
+  const [chosenFulfillment, setFulfillment] = useState<Fulfillment>("Delivery");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
@@ -17,6 +17,7 @@ export function Checkout({ items, subtotalCents, onClose, onPlaced }: {
   const [uncertain, setUncertain] = useState(false);
   const [error, setError] = useState("");
   const attempt = useRef<PendingOrder | null>(null);
+  const fulfillment: Fulfillment = chosenFulfillment === "Delivery" && !settings.deliveryEnabled && settings.pickupEnabled ? "Pickup" : chosenFulfillment === "Pickup" && !settings.pickupEnabled && settings.deliveryEnabled ? "Delivery" : chosenFulfillment;
   const normalizedPromo = promoCode.trim().toUpperCase();
   const estimatedDiscount = /^MIX-[A-F0-9]{8}$/.test(normalizedPromo) ? Math.round(subtotalCents * .1) : 0;
   const amount = totals(subtotalCents, fulfillment, estimatedDiscount);
@@ -49,7 +50,7 @@ export function Checkout({ items, subtotalCents, onClose, onPlaced }: {
       <fieldset disabled={busy || uncertain}>
         <legend className="sr-only">Order details</legend>
         <div className="checkout-section"><p className="checkout-label">How should we get it to you?</p>
-          <div className="segmented-control">{(["Delivery", "Pickup"] as const).map((mode) => <button type="button" key={mode} aria-pressed={fulfillment === mode} className={fulfillment === mode ? "selected" : ""} onClick={() => setFulfillment(mode)}>{mode}<span>{mode === "Pickup" || subtotalCents >= 4000 ? "Free" : "$4"}</span></button>)}</div>
+          <div className="segmented-control">{(["Delivery", "Pickup"] as const).map((mode) => { const enabled = mode === "Delivery" ? settings.deliveryEnabled : settings.pickupEnabled; return <button type="button" key={mode} disabled={!enabled} aria-pressed={fulfillment === mode} className={fulfillment === mode ? "selected" : ""} onClick={() => setFulfillment(mode)}>{mode}<span>{enabled ? mode === "Pickup" || subtotalCents >= 4000 ? "Free" : "$4" : "Unavailable"}</span></button>; })}</div>
         </div>
         <div className="checkout-fields">
           <label>Your name<input autoComplete="name" required minLength={2} maxLength={80} value={name} onChange={(event) => setName(event.target.value)} placeholder="Who is the order for?" /></label>
@@ -69,7 +70,7 @@ export function Checkout({ items, subtotalCents, onClose, onPlaced }: {
       </div>
       {error && <p className="flow-error" role="alert">{error}</p>}
       {uncertain && <p className="flow-hint">We haven&apos;t confirmed the result yet. Retry the same order to avoid duplicates.</p>}
-      <button className="primary-button place-order" type="submit" disabled={busy || !items.length}>{busy ? "Sending your order…" : uncertain ? "Retry confirmation" : `Place order · ${money(amount.totalCents)}`}</button>
+      {!settings.acceptingOrders && <p className="flow-error">{settings.notice || "Ordering is currently paused."}</p>}<button className="primary-button place-order" type="submit" disabled={busy || !items.length || !settings.acceptingOrders}>{busy ? "Sending your order…" : uncertain ? "Retry confirmation" : `Place order · ${money(amount.totalCents)}`}</button>
     </form>
   </div>;
 }

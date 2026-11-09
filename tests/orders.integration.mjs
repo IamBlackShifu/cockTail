@@ -128,6 +128,19 @@ test("real orders: authorization, prices, retries, transitions and persistence",
       assert.equal(order.history.length, 6);
       assert.equal((await request(path, { method: "PATCH", auth: true, body: { action: "cancelled", version: order.version } })).status, 409);
     });
+    await t.test("staff publish customer updates and optional ETAs", async () => {
+      const path = `/api/ops/orders/${order.id}`;
+      assert.equal((await request(path, { method: "PATCH", body: { action: "customer-update", version: order.version, message: "Driver is five minutes away." } })).status, 401);
+      assert.equal((await request(path, { method: "PATCH", auth: true, body: { action: "customer-update", version: order.version, message: "x" } })).status, 400);
+      const response = await request(path, { method: "PATCH", auth: true, body: { action: "customer-update", version: order.version, message: "Driver is five minutes away.", etaMinutes: 5 } });
+      assert.equal(response.status, 200);
+      order = (await response.json()).order;
+      assert.equal(order.customerUpdates.length, 1);
+      assert.equal(order.customerUpdates[0].message, "Driver is five minutes away.");
+      assert.ok(Date.parse(order.customerUpdates[0].estimatedAt) > Date.parse(order.customerUpdates[0].at));
+      const tracked = await request(`/api/orders/${order.id}`, { headers: { Authorization: `Bearer ${token}` } });
+      assert.equal((await tracked.json()).order.customerUpdates[0].message, "Driver is five minutes away.");
+    });
     await t.test("pickup custom creations have correct options, prices and handover", async () => {
       const response = await request("/api/orders", { method: "POST", body: { ...input, fulfillment: "Pickup", address: "", items: [{ cocktailId: -1, quantity: 2, creationName: "Harare Sunset", creatorKey: customCreatorKey, choices: { spirit: "Gin", mixer: "Passionfruit", finish: "Berry crown" } }] }, headers: { ...submitHeaders, "Idempotency-Key": randomUUID() } });
       assert.equal(response.status, 201);
@@ -288,6 +301,47 @@ test("real orders: authorization, prices, retries, transitions and persistence",
       const restored = await request(`/api/ops/products/${product.id}`, { method: "DELETE", auth: true, body: { version: product.version, active: true } });
       assert.equal(restored.status, 200);
       assert.equal((await restored.json()).product.active, true);
+    });
+    await t.test("staff control ordering availability and customer notices", async () => {
+      assert.equal((await request("/api/ops/store")).status, 401);
+      const initialResponse = await request("/api/ops/store", { auth: true });
+      assert.equal(initialResponse.status, 200);
+      assert.equal((await initialResponse.json()).settings.acceptingOrders, true);
+
+      const pausedResponse = await request("/api/ops/store", {
+        method: "PUT", auth: true,
+        body: { acceptingOrders: false, deliveryEnabled: true, pickupEnabled: true, notice: "Closed briefly for prep." },
+      });
+      assert.equal(pausedResponse.status, 200);
+      const blocked = await request("/api/orders", {
+        method: "POST", body: input,
+        headers: { "Idempotency-Key": randomUUID(), "X-Order-Token": randomBytes(32).toString("hex") },
+      });
+      assert.equal(blocked.status, 409);
+      assert.match((await blocked.json()).error, /Closed briefly for prep/);
+
+      const pickupOnlyResponse = await request("/api/ops/store", {
+        method: "PUT", auth: true,
+        body: { acceptingOrders: true, deliveryEnabled: false, pickupEnabled: true, notice: "Pickup only this evening.", whatsappNumber: "263771234567" },
+      });
+      assert.equal(pickupOnlyResponse.status, 200);
+      const unavailableDelivery = await request("/api/orders", {
+        method: "POST", body: input,
+        headers: { "Idempotency-Key": randomUUID(), "X-Order-Token": randomBytes(32).toString("hex") },
+      });
+      assert.equal(unavailableDelivery.status, 409);
+      assert.match((await unavailableDelivery.json()).error, /Delivery is currently unavailable/);
+      const publicSettings = await request("/api/store");
+      assert.equal(publicSettings.status, 200);
+      const publishedSettings = (await publicSettings.json()).settings;
+      assert.equal(publishedSettings.deliveryEnabled, false);
+      assert.equal(publishedSettings.whatsappNumber, "263771234567");
+
+      const restored = await request("/api/ops/store", {
+        method: "PUT", auth: true,
+        body: { acceptingOrders: true, deliveryEnabled: true, pickupEnabled: true, notice: "", whatsappNumber: "" },
+      });
+      assert.equal(restored.status, 200);
     });
     await t.test("order and staff session survive process restart; logout revokes access", async () => {
       await stop(); await start();
